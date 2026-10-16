@@ -1,0 +1,18 @@
+{
+  "name": "claudapter",
+  "version": "0.1.0-rc.1",
+  "description": "Your Claude Code. Your choice of models.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=24.0.0" },
+  "bin": { "claudapter": "dist/cli.js" },
+  "exports": "./dist/gateway.js",
+  "files": ["dist", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "docs"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --import ./test/isolate.mjs --test test/*.test.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
+  },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "^5.9.3" }
+}
