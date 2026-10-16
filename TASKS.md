@@ -36,3 +36,11 @@ Evidence: `docs/verification.md`. Check items only after verification; record bl
 - [x] Windows/macOS/Linux CI configured (remote execution not performed).
 - [x] English install/config/auth/fallback/agent/security/troubleshooting/uninstall docs and demo.
 - [x] Factual compatibility matrix, final tests and live evidence with explicit gaps.
+
+## Next extension: optional TUI (concept, not shipped in rc.1)
+- [x] Inspect current usage/context behavior and compare TUI libraries; record `docs/tui-concept.md`.
+- [ ] Verify Agent SDK against the installed CLI, preserved configuration and permission lifecycle.
+- [ ] Ship native and custom chat modes together, with explicit TUI opt-in.
+- [ ] Add provider-aware session usage, honest quota/cost states and separate catalog/runtime context.
+- [ ] Add model/agent/usage panels, theme presets and scoped fallback controls.
+- [ ] Verify Windows input, resume, agent continuation, safe retries and packed installation.

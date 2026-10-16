@@ -205,6 +205,10 @@ cross-provider fallback empty.
 See [architecture and security](docs/architecture.md),
 [demo](docs/demo.md) and [verification](docs/verification.md).
 
+The [optional TUI concept](docs/tui-concept.md) describes the proposed next extension,
+including provider-aware usage and context provenance. Its TUI commands are not
+implemented in this release.
+
 ## Develop and uninstall
 
 ```powershell
