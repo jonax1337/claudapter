@@ -5,9 +5,89 @@ Claude Code 2.1.301, Codex CLI 0.163.0. This file separates observed behavior
 from protocol documentation and remaining limitations. No external publication
 or remote CI execution occurred.
 
+## 0.2.0 extension acceptance
+
+The optional TUI, provider ledger and maximum-context integration are implemented.
+Full native feature parity remains incomplete; [TUI documentation](tui.md)
+lists the implemented surfaces and explicit gaps. Every implemented special
+dialog uses the own renderer. Unsupported native JSX is canceled, not handed
+off to the native UI or advertised as complete.
+
+The final suite includes controller/trust lifecycle, Unicode editing, UI
+approvals, native compatibility envelopes, preference persistence, quota and
+token normalization, admin writers and workspace controls. The installed native
+engine participates in isolated context, replay, fallback and settings-writer
+tests; those tests use fixture accounts and no real inference.
+
+`CLAUDAPTER_NATIVE_TEST=1 npm test`: **152 passed, 0 failed, 0 skipped**.
+TypeScript and the final UI regression checks pass. The npm tarball contains
+only the configured distribution, docs and notices, with no credentials/test
+homes. It was installed under the Windows temporary directory outside the
+checkout and globally as **0.2.0-rc.2**; the installed command reports that version.
+
+The outside-checkout artifact edited a deliberately broken `sum.mjs`. In an
+explicit `--permission-mode default` session with fixture `ask: ["Bash"]`, the
+own dialog allowed `node sum.test.mjs` once, producing **PACKED_TUI_OK**, and
+denied a separate sentinel write. `denial-sentinel-2.txt` was absent afterward.
+Own `/resume` restored session `73f42dcf-f95a-4dda-bac2-48c2eb75586b` with the
+test output, denied-tool result, native history and successful resume hook;
+no new prompt/inference was needed. Installed `usage --refresh --json` reported
+three completed main requests separately from one canceled auxiliary request.
+
+The first fresh GPT-only fixture inherited native **auto** permission mode:
+the native safety classifier rejected some Bash requests while allowing a safe
+sentinel command without a dialog. That run is not permission-dialog evidence.
+Claudapter does not silently change the user's mode. Explicit manual/default
+mode above supplies the verified GPT-only approval path; auto classification
+with external models remains a compatibility limitation.
+
+Actual Windows ConPTY acceptance against the 0.2 implementation observed:
+
+| Scenario | Observed result |
+| --- | --- |
+| Own startup trust | Own decline-first dialog; explicit acceptance recorded by Claude, then trusted configuration loaded |
+| Maximum context | `/context`: GPT-6.1-Sol catalog and engine both 872,000; auto-compact threshold 839,000; context estimates labeled |
+| Account quota panel | Claude session/weekly and ChatGPT weekly windows from real accounts; separate reset times and sources; no inferred billing |
+| Native question round trip | GPT `AskUserQuestion`, own Ocean/Midnight choice, selected Ocean, final `CHOSEN_THEME Ocean` |
+| Tool cycle | GPT Read of `sum.mjs`, Bash `node sum.test.mjs`, final `SUM_TEST_OK` |
+| Native GPT agent | Explicit `claudapter:gpt-reviewer`, agent `a3e54a0a55cf40523`, Read and returned review; two completed GPT requests separately attributed |
+| Main accounting | Six completed main requests; two canceled auxiliary attempts remain interrupted/unmeasured rather than zero |
+| Function key and refresh | F2 opened the own model library; its catalog refresh completed and retained maximum-context rows |
+| Graceful shutdown | `/exit` returned 0 and saved the gateway usage snapshot |
+
+Claude's account was already at its real session limit during this TUI acceptance.
+No new Claude inference was repeatedly attempted; the real Claude→GPT→Claude
+cycle and Claude-main/GPT-agent evidence below belong to 0.1 acceptance. New
+engine-level context and fallback regression checks use simulated endpoints.
+No near-872K prompt or quota-exhaustion test was performed.
+
+Both real credential-file hashes still matched the original preservation
+baseline. Native `settings.json` did not match that older baseline; its last
+write was 21:20 local and its selected model was `gpt-6-astra`. This prevents an
+honest whole-session unchanged-settings claim. No restoration was attempted;
+automated tests and the TUI acceptance use separate native homes. The later
+pack/install verification records a fresh hash comparison separately.
+That fresh comparison passed for native settings, Claude credentials and Codex
+credentials after installation and the outside-checkout TUI tests.
+
+### Home-directory trust regression
+
+The first installed TUI failed when launched from `C:\Users\Jonas`: it required
+`workspace_trust_recorded`, but native Claude intentionally returns false for
+home-directory consent, which is session-only. The corrected controller passes
+that consent to the actual running query and retains it only for this TUI's
+lifetime. It does not start/close a temporary trust process or write a permanent
+home-directory trust record. Declining still starts no engine.
+
+The regression is covered both through controller startup/resume fixtures and
+the installed Claude executable with an isolated HOME/USERPROFILE/config. The
+real-engine test observes `workspace_trust_recorded:false`, a usable live query
+and no accepted project trust record. Ordinary project trust retains its native
+persistent acknowledgement path.
+
 ## Automated evidence
 
-`CLAUDAPTER_NATIVE_TEST=1 npm test`: **43 passing tests**, including the actual
+The original 0.1.0 release passed **43 tests**, including the actual
 installed Claude executable with fixture credentials for truncated tool streams
 and separate native/gateway fallback ownership.
 `npm run check`: TypeScript passes. Unit/integration test homes are isolated;

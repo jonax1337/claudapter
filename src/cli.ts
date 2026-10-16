@@ -10,14 +10,17 @@ import { buildRegistry } from './models.js';
 import { loadConfig, saveConfig, configHome } from './config.js';
 import { launch } from './launcher.js';
 import { TOKEN_HEADER } from './gateway.js';
+import { VERSION } from './version.js';
 
 async function main() {
   const args=process.argv.slice(2); const config=await loadConfig();
+  if(args[0]==='tui'){const {runTui}=await import('./tui/app.js');process.exitCode=await runTui(args.slice(1)[0]==='--'?args.slice(2):args.slice(1),config);return;}
+  if(args[0]==='usage'){const {readUsage,formatUsage}=await import('./usage-client.js');const usage=await readUsage(config,args.includes('--refresh'));console.log(args.includes('--json')?JSON.stringify(usage,null,2):formatUsage(usage));return;}
   if(args[0]==='--') {process.exitCode=await launch(args.slice(1),config);return;}
   const auth=new CodexAuth();
-  if(args[0]==='--version') {console.log('0.1.0-rc.1');return;}
+  if(args[0]==='--version') {console.log(VERSION);return;}
   if(args[0]==='--help'||args[0]==='help') {
-    console.log('Claudapter — Your Claude Code. Your choice of models.\n\nclaudapter [-- <native Claude arguments>]\nclaudapter setup\nclaudapter models | providers | doctor\nclaudapter provider add\nclaudapter agents enable <ChatGPT model ID>\nclaudapter fallback show\nclaudapter fallback reset <session runtime ID> [conversation ID] [agent ID]\nclaudapter sessions\n\nFallback is off by default. Edit trusted '+join(configHome(),'config.json')+' to enable explicit rules.\nUse /model then s for a session-only switch; Enter saves Claude\'s default.');return;
+    console.log('Claudapter — Your Claude Code. Your choice of models.\n\nclaudapter [-- <native Claude arguments>]\nclaudapter tui [-- <Claude arguments>]\nclaudapter usage [--refresh] [--json]\nclaudapter setup\nclaudapter models | providers | doctor\nclaudapter provider add\nclaudapter agents enable <ChatGPT model ID>\nclaudapter fallback show\nclaudapter fallback reset <session runtime ID> [conversation ID] [agent ID]\nclaudapter sessions\n\nFallback is off by default. Edit trusted '+join(configHome(),'config.json')+' to enable explicit rules.\nUse /model then s in native mode; the custom TUI model picker is session-only.');return;
   }
   // PowerShell's npm .ps1 shim can consume the boundary; native flags remain unambiguous.
   if(args[0]?.startsWith('-')) {process.exitCode=await launch(args,config);return;}
@@ -28,7 +31,7 @@ async function main() {
     let claude:any={installed:false};
     try {const version=await promisify(execFile)('claude',['--version'],{windowsHide:true});const status=JSON.parse((await promisify(execFile)('claude',['auth','status'],{windowsHide:true})).stdout);claude={version:version.stdout.trim(),authenticated:status.loggedIn,method:status.authMethod};} catch {}
     console.log(JSON.stringify({node:process.version,claude,chatgpt:await auth.status(),models:registry.list().length,config:join(configHome(),'config.json'),fallbackRules:config.fallback.filter(r=>r.enabled).length,agents:config.agents,
-      notes:['ChatGPT keyring-only storage unsupported. Claudapter never refreshes or writes shared tokens.','Cached model entries are not verified availability.','Custom model context/price displays remain native estimates; no fabricated pricing.']},null,2));
+      notes:['ChatGPT keyring-only storage unsupported. Claudapter never refreshes or writes shared tokens.','Maximum model context is applied through temporary per-model native settings. Catalog entries are not live availability proof.','Use claudapter usage or TUI /usage for actual-provider accounting; native cost estimates are not invoices.']},null,2));
     if(args[0]==='setup') {await saveConfig(config);console.log('Configuration ready. If needed, use official `claude auth login` and `codex login`. No global Claude settings were changed.');}
     return;
   }

@@ -1,6 +1,6 @@
 # Claudapter
 
-`PROJECT_BRIEF.md` is the binding product mandate. Work in the main agent; do not delegate development. Dedicated product acceptance prompts may explicitly invoke native Claude Code subagents.
+`PROJECT_BRIEF.md` is the original product mandate. Later explicit user requests extend it: optional custom TUI, maximum supported model context, provider-aware usage, and own special dialogs. Native launch stays the default. Work in the main agent unless Jonas explicitly authorizes delegation for the current task. Dedicated product acceptance prompts may explicitly invoke native Claude Code subagents.
 
 - Communicate with Jonas in German; code, CLI output and documentation are English.
 - Keep `E:/DEV/rookery-agent` read-only. Preserve MIT attribution for adapted code.

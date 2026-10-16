@@ -134,3 +134,53 @@ test('content refusal remains a response, not an availability fallback trigger',
   const f=await fixture(t,{fallback:[{...rule,from:'gpt-test',targets:['claude-sonnet-test']}],handler:(_,res)=>res.end(frame({type:'response.refusal.delta',delta:'Cannot assist with that request.'})+frame({type:'response.completed',response:{model:'gpt-test',usage:{input_tokens:1,output_tokens:1}}}))});
   const result=await(await f.send()).json();assert.equal(result.content[0].text,'Cannot assist with that request.');assert.equal(f.requests.length,1);assert.equal(f.gateway.events.filter(e=>e.event==='fallback').length,0);
 });
+
+test('usage endpoint accounts fallback under actual provider/model and isolates agent totals',async t=>{
+  const f=await fixture(t,{fallback:[rule],config:{agents:{'gpt-reviewer':'claude-sonnet-test'}},handler:(_,res,requests)=>requests.at(-1).body.model.startsWith('claude')?fail(res):res.end(completion())});
+  await(await f.send({model:'claude-sonnet-test'})).text();
+  f.gateway.state.register('session-a','reviewer','gpt-reviewer');
+  await(await f.send({model:'claude-sonnet-test'},{'x-claude-code-agent-id':'reviewer','x-claude-code-request-class':'subagent'})).text();
+  const r=await fetch(f.gateway.baseUrl+'/usage',{headers:{[TOKEN_HEADER]:f.gateway.token}});const snapshot=await r.json();
+  assert.equal(snapshot.attempts.length,4);assert.equal(new Set(snapshot.attempts.map(a=>a.id)).size,4);
+  assert.equal(snapshot.totals.length,4);
+  for(const total of snapshot.totals.filter(t=>t.provider==='chatgpt')) {assert.equal(total.tokens.input,12);assert.equal(total.tokens.cacheRead,5);assert.equal(total.tokens.output,2);}
+  for(const total of snapshot.totals.filter(t=>t.provider==='anthropic')) {assert.equal(total.tokens,null);assert.equal(total.unknown,1);}
+  assert.ok(f.gateway.events.filter(e=>e.event==='response').every(e=>e.attemptId));
+  assert.equal((await fetch(f.gateway.baseUrl+'/usage')).status,401);
+  assert.equal((await fetch(f.gateway.baseUrl+'/usage/refresh',{method:'POST'})).status,401);
+});
+
+test('Claude cumulative stream usage is counted once, including cache writes; count_tokens is excluded',async t=>{
+  const f=await fixture(t,{handler:(req,res)=>{
+    if(req.url.includes('count_tokens'))return res.end('{"input_tokens":999}');
+    res.end(frame({type:'message_start',message:{model:'claude-sonnet-test',usage:{input_tokens:10,output_tokens:0,cache_read_input_tokens:80,cache_creation_input_tokens:5}}})+
+      frame({type:'message_delta',usage:{output_tokens:2}})+frame({type:'message_delta',usage:{output_tokens:7}})+frame({type:'message_stop'}));
+  }});
+  await(await f.send({model:'claude-sonnet-test',stream:true})).text();
+  await(await fetch(f.gateway.baseUrl+'/v1/messages/count_tokens',{method:'POST',headers:{[TOKEN_HEADER]:f.gateway.token},body:JSON.stringify({model:'claude-sonnet-test',messages:[]})})).text();
+  const snapshot=f.gateway.manifest().usage;assert.equal(snapshot.attempts.length,1);
+  assert.deepEqual(snapshot.totals[0].tokens,{input:95,output:7,cacheRead:80,cacheCreate:5,reasoning:null});
+});
+
+test('nonstream Anthropic-compatible usage retains attribution and incomplete streams remain unknown',async t=>{
+  const f=await fixture(t,{handler:(_,res)=>res.end(JSON.stringify({model:'claude-sonnet-test',usage:{input_tokens:3,output_tokens:4,cache_read_input_tokens:6}}))});
+  await(await f.send({model:'claude-sonnet-test'})).text();assert.equal(f.gateway.manifest().usage.totals[0].tokens.input,9);
+  const g=await fixture(t,{handler:(_,res)=>res.end(frame({type:'message_start',message:{usage:{input_tokens:3,output_tokens:0}}}))});
+  await(await g.send({model:'claude-sonnet-test',stream:true})).text();
+  const attempt=g.gateway.manifest().usage.attempts[0];assert.equal(attempt.outcome,'interrupted');assert.equal(attempt.tokens,null);
+  const h=await fixture(t,{handler:(_,res)=>res.end(frame({type:'response.output_text.delta',delta:'partial'}))});
+  await(await h.send({stream:true})).text();assert.equal(h.gateway.manifest().usage.totals[0].unknown,1);
+});
+
+test('quota endpoint refreshes both observed accounts without exposing incoming credentials',async t=>{
+  const calls=[];const f=await fixture(t,{options:{fetch:async(url,init)=>{
+    calls.push({url,init});
+    if(init.method==='GET') return Response.json(url.includes('chatgpt')?{rate_limit:{primary_window:{used_percent:10,reset_at:1800000000,limit_window_seconds:18000}}}:{five_hour:{utilization:20,resets_at:null}});
+    return Response.json({model:'claude-sonnet-test',usage:{input_tokens:1,output_tokens:1}});
+  }}});
+  await(await f.send({model:'claude-sonnet-test'})).text();
+  const response=await fetch(f.gateway.baseUrl+'/usage/refresh',{method:'POST',headers:{[TOKEN_HEADER]:f.gateway.token}});
+  const snapshot=await response.json();assert.ok(snapshot.providers.every(p=>p.state==='available'));
+  assert.equal(calls.filter(c=>c.init.method==='GET').length,2);assert.ok(!JSON.stringify(snapshot).includes('fixture-claude-secret'));
+  assert.equal(snapshot.attempts.length,1,'quota reads are not inference attempts');
+});

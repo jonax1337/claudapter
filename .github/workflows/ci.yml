@@ -12,12 +12,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - run: npm ci --omit=optional
       - run: npm test
       - run: npm pack
       - name: Install and check packed artifact
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/claudapter-install"
-          npm install --prefix "$RUNNER_TEMP/claudapter-install" ./claudapter-0.1.0-rc.1.tgz
+          npm install --omit=optional --prefix "$RUNNER_TEMP/claudapter-install" ./claudapter-*.tgz
           node "$RUNNER_TEMP/claudapter-install/node_modules/claudapter/dist/cli.js" --version

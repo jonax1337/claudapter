@@ -8,12 +8,14 @@ import { TurnTranslator, readServerSentEvents } from './translate.js';
 import { defaults, type Config } from './config.js';
 import { FallbackState, classify, assertCompatible, retryDelay, type Identity } from './fallback.js';
 import { Providers } from './providers.js';
+import { UsageLedger, QuotaReader, type UsageAttempt } from './usage.js';
 
 export const TOKEN_HEADER = 'x-claudapter-token';
 export interface RouteEvent {
   time: string; event: string; session?: string; agent?: string; requestClass?: string;
   requested: string; actual: string; provider: string; status?: number;
   tools?: string[]; toolResults?: number; reason?: string;
+  attemptId?: string;
 }
 export interface GatewayOptions {
   registry: Registry; auth?: CodexAuth;
@@ -30,6 +32,8 @@ export async function startGateway(options: GatewayOptions) {
   const upstreamFetch = options.fetch ?? fetch;
   const config = options.config ?? defaults();
   const providers = new Providers(config,auth,upstreamFetch);
+  const usage = new UsageLedger();
+  const quotas = new QuotaReader(config,auth,upstreamFetch);
   const state = new FallbackState(config.fallback);
   const controllers = new Set<AbortController>();
   const interrupted = new Set<string>();
@@ -48,10 +52,13 @@ export async function startGateway(options: GatewayOptions) {
     let fingerprint = '';
     let event: RouteEvent | undefined;
     let identity: Identity = {};
+    let usageAttempt: UsageAttempt | undefined;
     try {
       if (req.headers[TOKEN_HEADER] !== token) return error(res, 401, 'Local gateway authentication required.');
       const path = new URL(req.url ?? '/', 'http://localhost').pathname;
       if (req.method==='GET' && path==='/status') return json(res,200,manifest());
+      if (req.method==='GET' && path==='/usage') return json(res,200,usage.snapshot(quotas.snapshot()));
+      if (req.method==='POST' && path==='/usage/refresh') { await quotas.refresh(controller.signal); return json(res,200,usage.snapshot(quotas.snapshot())); }
       if (req.method==='POST' && path==='/refresh') { await options.refresh?.(); return json(res,200,manifest()); }
       if (req.method==='POST' && path==='/reset') {
         const body=JSON.parse(await readBody(req));
@@ -76,6 +83,7 @@ export async function startGateway(options: GatewayOptions) {
       if (!body || typeof body.model !== 'string' || !Array.isArray(body.messages)) return error(res, 400, 'Messages and an explicit model are required.');
       let model: Model;
       try { model = options.registry.resolve(body.model); } catch { return error(res, 400, 'Unknown model; no provider substitution was performed.'); }
+      if (model.provider==='anthropic') quotas.observeClaudeAuthorization(req.headers.authorization);
       const session = header(req, 'x-claude-code-session-id');
       const agent = header(req, 'x-claude-code-agent-id');
       const requestClass = header(req, 'x-claude-code-request-class');
@@ -106,8 +114,12 @@ export async function startGateway(options: GatewayOptions) {
         event={...event,actual:model.id,provider:model.provider};
         if (targetIndex>0) emit({...event,event:'fallback',reason:lastReason});
         for (let attempt=0;attempt<=(policy?.retries??0);attempt++) {
+          usageAttempt = path==='/v1/messages' ? usage.begin({provider:model.provider,requestedModel:body.model,actualModel:model.id,
+            upstreamModel:model.upstream,session,agent,requestClass}) : undefined;
+          event={...event,attemptId:usageAttempt?.id};
           upstream=await providers.request({model,body,request:req,path:path+new URL(req.url!,'http://localhost').search,session:session??fingerprint,
             signal: policy ? AbortSignal.any([controller.signal,AbortSignal.timeout(policy.timeoutMs)]) : controller.signal});
+          if (usageAttempt) usageAttempt.status=upstream.status;
           emit({...event,event:'response',status:upstream.status});
           if (upstream.ok) {
             if (model.id!==body.model && policy && (targetIndex>0 || routed===body.model)) state.set(identity,body.model,model.id,Math.max(policy.cooldownMs,retryHint),lastReason);
@@ -115,6 +127,7 @@ export async function startGateway(options: GatewayOptions) {
           }
           if ([401,403].includes(upstream.status)) {model.auth='expired';model.availability='auth_failed';delete model.verifiedAt;}
           const failure=await readFailure(upstream);
+          if (usageAttempt) usage.finish(usageAttempt,'rejected');
           const reason=classify(upstream.status,failure);
           retryHint=retryDelay(upstream.headers.get('retry-after'));
           if(reason) {model.availability='temporarily_unavailable';model.unavailableUntil=Date.now()+Math.max(retryHint,policy?.cooldownMs??60000);}
@@ -140,13 +153,24 @@ export async function startGateway(options: GatewayOptions) {
         res.writeHead(upstream.status, headers);
         if (body.stream===true) {
           let complete=false;
+          let reportedUsage: Record<string,unknown> = {}; let reportedModel: unknown; let finalUsage=false;
           for await (const item of readServerSentEvents(upstream.body)) {
             if (item.type==='error') throw new Error('Upstream stream failed.');
+            if (item.type==='message_start') { reportedUsage={...((item.message as any)?.usage??{})}; reportedModel=(item.message as any)?.model; }
+            if (item.type==='message_delta') { reportedUsage={...reportedUsage,...(item.usage as any??{})}; finalUsage ||= Object.hasOwn(item.usage as object??{},'output_tokens'); }
             await write(res,'event: '+item.type+'\ndata: '+JSON.stringify(item)+'\n\n');
             if (item.type==='message_stop') { complete=true; break; }
           }
           if (!complete) throw new Error('Truncated Anthropic stream.');
-        } else for await (const chunk of upstream.body) await write(res, chunk);
+          if (usageAttempt) usage.finish(usageAttempt,'completed',finalUsage?reportedUsage:undefined,reportedModel);
+        } else {
+          // Bound inspection while preserving every passthrough byte, including unknown provider fields.
+          const chunks: Uint8Array[]=[]; let size=0;
+          for await (const chunk of upstream.body) { size+=chunk.length; if(size<=16*1024*1024) chunks.push(chunk); await write(res,chunk); }
+          let message: any;
+          if(size<=16*1024*1024) try { message=JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* Missing usage stays unknown. */ }
+          if (usageAttempt) usage.finish(usageAttempt,'completed',message?.usage,message?.model);
+        }
         model.verifiedAt=new Date().toISOString();model.availability='verified';model.auth='authenticated';delete model.unavailableUntil;
         res.end(); return;
       }
@@ -159,6 +183,8 @@ export async function startGateway(options: GatewayOptions) {
           emit({...event, event: 'tool', tools: [(incoming.item as any).name]});
         if (incoming.type==='response.completed' && (incoming.response as any)?.model && (incoming.response as any).model!==model.upstream)
           throw new Error('Upstream reported a different model.');
+        if (incoming.type==='response.completed' && usageAttempt)
+          usage.finish(usageAttempt,'completed',(incoming.response as any)?.usage,(incoming.response as any)?.model);
         const translated = translator.handle(incoming);
         if (body.stream === true) {
           if (!res.headersSent && translated.length) res.writeHead(200, {'content-type':'text/event-stream','cache-control':'no-cache'});
@@ -175,6 +201,7 @@ export async function startGateway(options: GatewayOptions) {
       if (body.stream === true) res.end();
       else json(res, 200, translator.toMessage(text));
     } catch (e) {
+      if (usageAttempt) usage.finish(usageAttempt,'interrupted');
       if (res.headersSent) {
         state.block(identity);
         if (fingerprint) interrupted.add(fingerprint);
@@ -195,12 +222,12 @@ export async function startGateway(options: GatewayOptions) {
       agents:Object.entries(config.agents).map(([name,model])=>({name:'claudapter:'+name,model,purpose:name.includes('review')?'Review on explicit user request':'Implement on explicit user request'})),
       delegation:'Only delegate when the user explicitly requests it. Availability is not permission.',
       rules:config.fallback,registeredAgents:[...state.agents].map(([scope,name])=>({scope,name})),routes:[...state.routes].map(([scope,value])=>({scope,...value,active:value.until>Date.now()})),
-      recentRoutes:events.slice(-20),discovery:'Use the claudapter discovery MCP tool to refresh read-only availability. Auth readiness is not proof of live availability.'};
+      recentRoutes:events.slice(-20),usage:usage.snapshot(quotas.snapshot()),discovery:'Use the claudapter discovery MCP tool to refresh read-only availability. Quotas: POST /usage/refresh. Auth readiness is not proof of live availability.'};
   }
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Cannot bind loopback gateway.');
-  return { baseUrl:'http://127.0.0.1:' + address.port, token, events, registry: options.registry,state,manifest,
+  return { baseUrl:'http://127.0.0.1:' + address.port, token, events, registry: options.registry,state,manifest,usage,quotas,
     async close() { for (const c of controllers) c.abort(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 

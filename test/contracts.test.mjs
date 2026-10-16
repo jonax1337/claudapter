@@ -43,6 +43,13 @@ test('cooldown expires, explicit selection resets route, new prompts release int
   state.set(main,'a','b',1000,'rate_limit');assert.equal(state.route(main,'c'),'c');assert.equal(state.routes.size,0);
   state.block(main);assert.equal(state.isBlocked(main),true);assert.equal(state.isBlocked({...main,prompt:'new'}),false);
 });
+test('revoked fallback authorization immediately releases cooldown but keeps the replay guard',()=>{
+  const rules=[structuredClone(rule)],state=new FallbackState(rules),main={session:'s',requestClass:'main',prompt:'p'};
+  state.set(main,'a','b',10000,'rate_limit');state.block(main);rules[0].enabled=false;
+  assert.equal(state.route(main,'a'),'a');assert.equal(state.isBlocked(main),true);
+  rules[0].enabled=true;state.set(main,'a','b',10000,'rate_limit');rules[0].targets=['c'];
+  assert.equal(state.route(main,'a'),'a');assert.equal(state.isBlocked(main),true);
+});
 test('classification excludes billing and respects Retry-After, context bounds never truncate',()=>{
   assert.equal(classify(429,{error:{type:'billing_error'}}),undefined);assert.equal(classify(429,{error:{type:'rate_limit_error'}}),'rate_limit');assert.equal(classify(503,{error:{type:'api_error'}}),'unavailable');
   assert.equal(classify(429,{error:{type:'rate_limit_error',message:'This credential is only authorized for Claude Code'}}),undefined);
@@ -54,7 +61,7 @@ test('classification excludes billing and respects Retry-After, context bounds n
 test('explicit settings and picker rows survive composition without writing native files',async()=>{
   await mkdir(process.env.CLAUDE_CONFIG_DIR,{recursive:true});const path=join(process.env.CLAUDE_CONFIG_DIR,'settings.json');
   await writeFile(path,JSON.stringify({modelPicker:{options:[{model:'existing',label:'Keep'}]},permissions:{deny:['Bash']},hooks:{Stop:[]}}));const before=await readFile(path,'utf8');
-  const registry=new Registry([{id:'gpt-test',label:'GPT',provider:'chatgpt'}]);
+  const registry=new Registry([{id:'gpt-test',label:'GPT',provider:'chatgpt',context:500000}]);
   const explicit={permissions:{allow:['Read']},hooks:{Stop:[{hooks:[]}]},mcp:{keep:true}};
   const prepared=await prepareSettings(['--resume','session','--settings',JSON.stringify(explicit)],registry,defaults());
   assert.deepEqual(prepared.args,['--resume','session']);assert.deepEqual(prepared.settings.permissions,explicit.permissions);assert.deepEqual(prepared.settings.hooks,explicit.hooks);

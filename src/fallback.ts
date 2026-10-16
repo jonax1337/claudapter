@@ -20,7 +20,8 @@ export class FallbackState {
     const key = this.key(i); if (!key) return requested;
     const state = this.routes.get(key);
     if (!state) return requested;
-    if (state.requested!==requested || state.until<=now) { this.routes.delete(key); return requested; }
+    const rule=this.rule(i,requested);
+    if (!rule || !rule.targets.includes(state.actual) || state.requested!==requested || state.until<=now) { this.routes.delete(key); return requested; }
     return state.actual;
   }
   set(i: Identity, requested: string, actual: string, cooldown: number, reason: string) {

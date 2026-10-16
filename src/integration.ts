@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
 import { TOKEN_HEADER } from './gateway.js';
+import { VERSION } from './version.js';
 
 async function request(path: string, body?: unknown) {
   const url = process.env.CLAUDAPTER_GATEWAY_URL;
@@ -24,7 +25,7 @@ if (process.argv[2]==='hook') {
       if(line.length>1_000_000) throw new Error('Input too large.');
       message=JSON.parse(line); if (message.id===undefined) continue;
       let result: unknown;
-      if(message.method==='initialize') result={protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'claudapter',version:'0.1.0-rc.1'}};
+      if(message.method==='initialize') result={protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'claudapter',version:VERSION}};
       else if(message.method==='ping') result={};
       else if(message.method==='tools/list') result={tools:[{name:'discovery',description:'Read-only refresh of configured models, authentication readiness, explicitly enabled agents/fallback policies, cooldowns and actual routing. Does not call inference or change permissions.',
         inputSchema:{type:'object',properties:{refresh:{type:'boolean'}},additionalProperties:false},annotations:{readOnlyHint:true,destructiveHint:false,openWorldHint:false}}]};
