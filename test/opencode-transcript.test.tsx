@@ -731,7 +731,9 @@ describe('Markdown fidelity', () => {
     try {
       const frame = await frameContaining(view, 'After code.');
       expect(frame).toContain('Heading');
-      expect(frame).toContain('Text with bold, code and a link.');
+      // Terminals without hyperlink support show the URL after the label, so only the label is fixed.
+      expect(frame).toContain('Text with bold, code and a link');
+      expect(frame).not.toMatch(/\*\*|\[link\]/);
       const indentOf = (word: string) => locate(frame, word).x;
       expect(indentOf('nested')).toBeGreaterThan(indentOf('one'));
       expect(indentOf('deeper')).toBeGreaterThan(indentOf('nested'));
