@@ -1,7 +1,6 @@
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
-import type { Key } from 'ink';
 import { configHome } from '../config.js';
 import { isThemeName, type ThemeName } from './theme-names.js';
 
@@ -9,8 +8,6 @@ export type { ThemeName } from './theme-names.js';
 export type EditorMode='normal'|'vim';
 /** `editorMode` is stored only once chosen, so files written before it existed round-trip unchanged. */
 export interface Preferences {theme:ThemeName;thinking:boolean;favorites:string[];keybindings:Record<string,string>;editorMode?:EditorMode}
-type ShortcutKey = Partial<Pick<Key,'ctrl'|'meta'|'shift'|'super'|'hyper'|'escape'|'tab'|'return'|'eventType'>>;
-
 export function defaultPreferences(): Preferences {
   return {theme:'midnight',thinking:false,favorites:[],keybindings:{
     'ctrl+p':'/help','ctrl+o':'/thinking',f2:'/model',f3:'/agents',f4:'/usage',f6:'/theme',
@@ -75,24 +72,4 @@ export async function savePreferences(preferences: Preferences,home=configHome()
     finally {await file.close();}
     await rename(temporary,destination);
   } finally {await rm(temporary,{force:true});}
-}
-
-export function keyChord(input: string,key: ShortcutKey = {}): string | undefined {
-  if(key.eventType==='release'||key.super||key.hyper||key.escape||key.tab||key.return)return;
-  let base='', ctrl=key.ctrl===true, alt=key.meta===true, shift=key.shift===true;
-  const functionSequence=/^\x1b(?:O([P-S])|\[\[([A-E])|\[(?:(1[1-5]|1[7-9]|2[0134])(?:;([2-8]))?~|(?:1;([2-8]))?([P-S])))$/.exec(input);
-  if(functionSequence) {
-    const [,ss3,linux,number,numberModifier,letterModifier,letter]=functionSequence;
-    const code=ss3??letter;
-    base='f'+(code?code.charCodeAt(0)-79:linux?linux.charCodeAt(0)-64:
-      [11,12,13,14,15,17,18,19,20,21,23,24].indexOf(Number(number))+1);
-    const modifiers=Number(numberModifier??letterModifier??1)-1;
-    shift ||= (modifiers&1)!==0;alt ||= (modifiers&2)!==0;ctrl ||= (modifiers&4)!==0;
-  } else {
-    const meta=/^\x1b([a-zA-Z0-9])$/.exec(input);
-    if(meta){input=meta[1];alt=true;}
-    if(!/^[a-zA-Z0-9]$/.test(input))return;
-    base=input.toLowerCase();
-  }
-  return canonicalChord([...(ctrl?['ctrl']:[]),...(alt?['alt']:[]),...(shift?['shift']:[]),base].join('+'));
 }

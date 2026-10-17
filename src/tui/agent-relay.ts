@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from './panels.js';
+import type { TranscriptEntry } from './transcript-model.js';
 
 /**
  * Messages from the user to a sub-agent.

@@ -11,25 +11,23 @@ claudapter usage --refresh
 claudapter usage --json
 ```
 
-## OpenTUI migration status
+## Runtime
 
-`claudapter tui` now launches the bundled OpenTUI/Solid interface using Bun
->=1.3.14 on PATH. Native `claudapter` still uses Node and does not load the UI.
-Developers also need Bun to build the UI bundle. Source attribution is in
-[OpenCode provenance](opencode-provenance.md).
+`claudapter tui` launches the bundled OpenTUI/Solid interface with Bun >=1.3.14 on
+`PATH`. Native `claudapter` runs on Node and never loads the UI. Developers also need
+Bun to build the UI bundle. OpenTUI's native renderer ships as a per-platform optional
+dependency, so do not install Claudapter with `--omit=optional`. Source attribution is
+in [OpenCode provenance](opencode-provenance.md).
 
-The new interface includes a two-tone block-glyph logo, centered dialogs over a
-dimmed backdrop, a searchable command palette with descriptions, and controller-backed
-command actions. The composer offers slash-command suggestions (↑↓ select, tab
-complete, enter run, esc dismiss), prompt history on ↑/↓ from an empty prompt, and a
-permission-mode badge with model and provider. Below it, a status bar shows an
-animated scanner, elapsed time and `esc interrupt` during a turn, and context usage
-otherwise. Command errors appear as a dismissing toast. Themes: midnight, ocean,
-ember, daylight, terminal and contrast (`/theme`). The historical details below describe
-the earlier Ink implementation and are not a blanket parity claim for the new UI.
-Frozen selection during streaming, styled Markdown fidelity, theme coverage and every
-administrative interaction still require full acceptance. The earlier Ink source
-remains temporarily for regression comparison, not as a public mode.
+The interface includes a two-tone block-glyph logo, centered dialogs over a dimmed
+backdrop, a searchable command palette with descriptions, and controller-backed command
+actions. The composer offers slash-command suggestions (↑↓ select, tab complete, enter
+run, esc dismiss), prompt history on ↑/↓ from an empty prompt, and a permission-mode
+badge with model and provider. Below it, a status bar shows an animated scanner,
+elapsed time and `esc interrupt` during a turn, and context usage otherwise. Command
+errors appear as a dismissing toast. Frozen selection during streaming, styled Markdown
+fidelity, theme coverage and every administrative interaction still require full live
+acceptance.
 
 ## Branded interface
 
@@ -155,7 +153,7 @@ Claude Code **2.1.301 or 2.1.302**. Those methods refuse an unknown version. Thi
 compatibility, not an upstream guarantee.
 
 Full native feature parity is **not complete**. Triage and status of each gap are in
-[parity-plan.md](parity-plan.md). Own flows now exist for side questions (`/btw`),
+[parity-plan.md](internal/parity-plan.md). Own flows now exist for side questions (`/btw`),
 `/cd` (with settings revalidation and renewed trust), an optional Vim mode with a kill
 ring and safe paste (`/vim`), a checkpoint summary approximation, `/account`, `/privacy`
 and `/upgrade` (browser only after confirmation), `/keymap` and `/tutorial`. Cloud,
@@ -172,5 +170,5 @@ preserved; Claudapter never silently disables the classifier or grants access.
 
 Unsupported native JSX dialogs are canceled with no native-UI handoff. An
 unavailable dialog is not counted as an implemented feature. See
-[SDK evidence](sdk-parity.md), [administration evidence](admin-evidence.md),
-[context evidence](context-evidence.md) and [release verification](verification.md).
+[SDK evidence](internal/sdk-parity.md), [administration evidence](internal/admin-evidence.md),
+[context evidence](internal/context-evidence.md) and [release verification](internal/verification.md).

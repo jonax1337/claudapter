@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from './panels.js';
+import type { TranscriptEntry } from './transcript-model.js';
 
 /**
  * Bookkeeping that ties live stream events to the complete messages that follow them.

@@ -11,15 +11,15 @@ copyright (c) 2025 opencode, MIT License. Adapted files and the full license tex
 solid-js (MIT); Solid and @opentui/solid are compiled into the shipped bundle.
 Claudapter is not affiliated with or endorsed by OpenCode.
 
-The earlier TUI sources still in the repository depend on React, Ink, @inkjs/ui and string-width, under their
-respective MIT licenses, and the Anthropic Claude Agent SDK under its own terms:
+Runtime dependencies `marked` and `string-width` are used under their MIT licenses, and
+the Anthropic Claude Agent SDK under its own terms:
 
 © Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements
 outlined here: https://code.claude.com/docs/en/legal-and-compliance.
 
 Dependency distributions retain their own license files. Claudapter's MIT
 license does not relicense Anthropic software. The SDK package declares optional
-platform binaries; installing with `--omit=optional` avoids those downloads.
+platform binaries, which npm installs for the current platform; Claudapter does not run them.
 Claudapter always selects the user's separately installed Claude Code executable.
 Codex and credentials are not bundled. Protocol interoperability does not imply
 endorsement or an official cross-provider subscription integration.

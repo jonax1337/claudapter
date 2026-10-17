@@ -5,7 +5,7 @@ const result = await Bun.build({
   target: 'bun',
   outdir: './dist/tui',
   naming: 'opencode.js',
-  external: ['@opentui/core', '@opentui/core/*', '@anthropic-ai/claude-agent-sdk', 'ink', 'react', '@inkjs/ui', 'marked', 'string-width'],
+  external: ['@opentui/core', '@opentui/core/*', '@anthropic-ai/claude-agent-sdk', 'marked', 'string-width'],
   conditions: ['browser'],
   plugins: [solid, {
     name: 'preserve-backend-module-paths',

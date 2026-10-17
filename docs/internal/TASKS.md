@@ -1,6 +1,19 @@
 # Release candidate checklist
 
-Evidence: `docs/verification.md`. Check items only after verification; record blocked and untested cases explicitly. M1–M5 below preserve the original 0.1.0-rc.1 evidence; they do not imply that every flow has been rerun for the 0.2.0 extension.
+Evidence: `docs/internal/verification.md`. Check items only after verification; record blocked and untested cases explicitly. M1–M5 below preserve the original 0.1.0-rc.1 evidence; they do not imply that every flow has been rerun for the 0.2.0 extension.
+
+## Public release preparation (0.2.0-rc.7)
+- [x] Superseded Ink TUI removed with Jonas's approval: `app.tsx`, `chrome.tsx`, `panels.tsx`, Ink `theme.ts`, `selection.ts`, `markdown.ts`, `viewport.ts`, `layout.ts`, `editDraft`, `keyChord` and their tests; `TranscriptEntry` moved to `transcript-model.ts`; `ink`, `react`, `@inkjs/ui`, `ink-testing-library`, `@types/react` dropped.
+- [x] TUI: main composer shows provider display names (was the raw `anthropic` ID); `ollama` label added (TDD, both tests red first).
+- [x] Install fix: `--omit=optional` also drops `@opentui/core-<platform>`, so `claudapter tui` could not render; recommendation removed from README, docs and CI.
+- [x] Build cleans `dist/`; CI installs Bun 1.3.14 and runs `check`, Node suite, OpenTUI suite and the packed install.
+- [x] Docs: new README (SVG logo generated from the TUI glyph table and Midnight theme, real TUI frame), `docs/configuration.md`, CHANGELOG, CONTRIBUTING, SECURITY, issue/PR templates; internal docs moved to `docs/internal` and excluded from the package; all relative links verified.
+- [x] Secret scan of tree and full history: no tokens, keys or credentials found.
+- [x] Suites: `npm run check` clean; Node 246 tests / 241 passed / 0 failed / 5 skipped; Bun 204 passed / 0 failed.
+- [x] Packed `claudapter-0.2.0-rc.7.tgz` (287.6 kB, 110 files, no `docs/internal`) installed outside the checkout: `--version` = 0.2.0-rc.7, help prints, `@opentui/core-win32-x64` present, OpenTUI native renderer loads, no Ink/React installed, no stale Ink modules in `dist`.
+- [ ] Interactive `claudapter tui` run from the rc.7 install (not repeated in this pass).
+- [ ] Remote CI run on GitHub (macOS/Linux) after the repository is published.
+- [ ] Create the GitHub repository, push, tag `v0.2.0-rc.7` and upload the tarball as a pre-release asset (external publishing needs Jonas).
 
 ## Ollama auto-detection (in progress)
 - [x] Auto-discovery at every registry build: `GET /api/tags` + `POST /api/show` per model (capabilities, `<arch>.context_length`), 1.5 s timeout; an unreachable server stays an empty catalog, per-model failures and reserved-ID collisions become launch notices instead of launch failures (`src/ollama.ts`, `buildRegistry`).

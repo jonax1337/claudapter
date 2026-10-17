@@ -4,3 +4,4 @@ dist/
 .projectatlas/
 .artifacts/
 .test-live/
+.playwright-mcp/

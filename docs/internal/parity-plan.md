@@ -1,6 +1,6 @@
 # Native parity plan
 
-Scope: the TUI gaps listed in [tui.md](tui.md) ("Compatibility and remaining work") and
+Scope: the TUI gaps listed in [tui.md](../tui.md) ("Compatibility and remaining work") and
 [tui-concept.md](tui-concept.md) ("Remaining parity"). Each gap is triaged first, then the
 ones that can be built honestly are implemented. Test results and live evidence belong in
 [verification.md](verification.md); this file states what exists, what is mocked and what

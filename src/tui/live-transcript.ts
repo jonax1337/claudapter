@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { safeText } from './editor.js';
-import type { TranscriptEntry } from './panels.js';
+import type { TranscriptEntry } from './transcript-model.js';
 import { StreamTrace } from './stream-trace.js';
 import { contentBlockEntry, isMetaMessage, promptText, sanitizeEntry, toolResultEntry, toolStartEntry } from './transcript-model.js';
 

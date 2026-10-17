@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from './panels.js';
+import type { TranscriptEntry } from './transcript-model.js';
 import { LiveTranscript } from './live-transcript.js';
 import type { RelayView } from './agent-relay.js';
 

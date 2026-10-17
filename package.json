@@ -1,7 +1,27 @@
 {
   "name": "claudapter",
-  "version": "0.2.0-rc.6",
+  "version": "0.2.0-rc.7",
   "description": "Your Claude Code. Your choice of models.",
+  "keywords": [
+    "claude-code",
+    "claude",
+    "chatgpt",
+    "codex",
+    "llm-gateway",
+    "ollama",
+    "glm",
+    "tui",
+    "cli"
+  ],
+  "homepage": "https://github.com/jonax1337/claudapter#readme",
+  "bugs": {
+    "url": "https://github.com/jonax1337/claudapter/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonax1337/claudapter.git"
+  },
+  "author": "Jonas Laux",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -16,15 +36,18 @@
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
-    "docs"
+    "CHANGELOG.md",
+    "docs",
+    "!docs/internal"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.opencode.json && bun scripts/build-tui.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json && tsc -p tsconfig.opencode.json && bun scripts/build-tui.mjs",
     "tui:preview": "npm run build && bun --preload @opentui/solid/preload src/tui/opencode/main.tsx",
     "test:tui": "bun test --preload @opentui/solid/preload ./test/opencode-home.test.tsx ./test/opencode-picker.test.tsx ./test/opencode-transcript.test.tsx ./test/opencode-theme.test.ts ./test/opencode-layout.test.ts ./test/agent-views.test.tsx ./test/agent-bridge.test.ts ./test/composer-vim.test.tsx ./test/parity-panels.test.tsx ./test/route-views.test.tsx",
     "test": "npm run build && node --import ./test/isolate.mjs --test test/*.test.mjs",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.opencode.json",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "overrides": {
     "seroval": "1.6.9"
@@ -33,17 +56,12 @@
     "@opentui/solid": "0.6.6",
     "solid-js": "1.9.12",
     "@types/node": "^24.0.0",
-    "@types/react": "^19.3.0",
-    "ink-testing-library": "^4.0.0",
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.301",
-    "@inkjs/ui": "2.0.0",
     "@opentui/core": "0.6.6",
-    "ink": "8.0.0",
     "marked": "18.1.1",
-    "react": "19.3.0",
     "string-width": "8.3.0"
   }
 }

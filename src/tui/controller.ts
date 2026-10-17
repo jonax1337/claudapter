@@ -13,7 +13,7 @@ import { trustDirectory,isWorkspaceTrusted,isHomeDirectory } from './trust.js';
 import { assertCompatVersion,launchWorkspaceTrust,invokeCompat } from './compat.js';
 import { cleanupSavedImages } from './opencode/clipboard-image.js';
 import { TOKEN_HEADER } from '../gateway.js';
-import type { TranscriptEntry } from './panels.js';
+import type { TranscriptEntry } from './transcript-model.js';
 import { applyTaskMessage,applyBackgroundTasks,type TaskView } from './task-model.js';
 import { AgentStreams,type AgentStreamView } from './agent-streams.js';
 import { SEND_MESSAGE_TOOL,relayOutcome,relayPrompt,relayTarget } from './agent-relay.js';

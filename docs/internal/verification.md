@@ -5,6 +5,24 @@ Claude Code 2.1.301, Codex CLI 0.163.0. This file separates observed behavior
 from protocol documentation and remaining limitations. No external publication
 or remote CI execution occurred.
 
+## Public release preparation (0.2.0-rc.7) — 2026-10-17
+
+- Windows 11, Node 24.20.0, Bun 1.4.3, Claude Code 2.1.302. Fixture-only; no live
+  inference in this pass.
+- `npm run check` clean. Node suite: 246 tests, 241 passed, 0 failed, 5 skipped (35
+  fewer than rc.6 because Ink-only tests were removed with their code). Bun/OpenTUI
+  suite: 204 passed, 0 failed.
+- Observed defect and fix: `npm install --omit=optional` removed
+  `@opentui/core-win32-x64`; every OpenTUI render then failed with "Cannot find package
+  '@opentui/core-win32-x64'". Installing without `--omit=optional` restores it.
+- Packed `claudapter-0.2.0-rc.7.tgz` installed with `npm install --prefix <temp>`
+  outside the checkout: `claudapter --version` printed 0.2.0-rc.7; `--help` printed;
+  `@opentui/core-win32-x64` present; `createTestRenderer` from the installed package
+  loaded the native renderer; `ink`, `react`, `@inkjs/ui` absent; no Ink modules in
+  `dist/tui`. An interactive TUI session from this install was not run.
+- Rendered fixture frames (home, session, busy, narrow 46 columns, palette) reviewed;
+  the composer now shows `Claude`/`Z.ai`/`Ollama` instead of provider IDs.
+
 ## Ollama auto-detection and Anthropic passthrough — 2026-10-17
 
 - Live discovery (local Ollama at 127.0.0.1:11434, no config entry):
@@ -346,7 +364,7 @@ or remote CI execution occurred.
 ## 0.2.0 extension acceptance
 
 The optional TUI, provider ledger and maximum-context integration are implemented.
-Full native feature parity remains incomplete; [TUI documentation](tui.md)
+Full native feature parity remains incomplete; [TUI documentation](../tui.md)
 lists the implemented surfaces and explicit gaps. Every implemented special
 dialog uses the own renderer. Unsupported native JSX is canceled, not handed
 off to the native UI or advertised as complete.

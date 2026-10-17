@@ -1,6 +1,7 @@
 # Architecture and evidence boundaries
 
-One Node.js 24 ESM package, no runtime dependencies, no daemon or database.
+One Node.js 24 ESM package with a small runtime dependency set (Claude Agent SDK,
+OpenTUI, `marked`, `string-width`), no daemon or database.
 `launcher.ts` owns one gateway and one real Claude child. `models.ts` is the
 registry for routing, picker rows, manifests and agents. `providers.ts` separates
 provider credentials and request formats. `translate.ts` is a pure adapted MIT

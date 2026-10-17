@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile,readdir,writeFile,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {defaultPreferences,loadPreferences,savePreferences,keyChord} from '../dist/tui/preferences.js';
+import {defaultPreferences,loadPreferences,savePreferences} from '../dist/tui/preferences.js';
 
 async function fixture(t) {
   const home=await mkdtemp(join(tmpdir(),'claudapter-ui-preferences-'));
@@ -60,28 +60,4 @@ test('invalid JSON and wrong preference types fail visibly without silently over
     await assert.rejects(loadPreferences(home));
     assert.equal(await readFile(join(home,'ui.json'),'utf8'),value);
   }
-});
-
-test('Ctrl and Alt chords normalize while reserved, pasted and released input cannot invoke shortcuts',()=>{
-  assert.equal(keyChord('p',{ctrl:true}),'ctrl+p');
-  assert.equal(keyChord('M',{meta:true,shift:true}),'alt+shift+m');
-  assert.equal(keyChord('\x1bm',{}),'alt+m');
-  assert.equal(keyChord('x',{ctrl:true,meta:true}),'ctrl+alt+x');
-  for(const input of ['c','i','j','m'])assert.equal(keyChord(input,{ctrl:true}),undefined);
-  assert.equal(keyChord('p',{ctrl:true,eventType:'release'}),undefined);
-  assert.equal(keyChord('p',{ctrl:true,super:true}),undefined);
-  assert.equal(keyChord('p',{}),undefined);
-  assert.equal(keyChord('pasted text',{ctrl:true}),undefined);
-  assert.equal(keyChord('',{}),undefined);
-  assert.equal(keyChord('p',{ctrl:true,return:true}),undefined);
-});
-
-test('standard terminal function-key sequences include F1 through F12 without interpreting pasted labels',()=>{
-  const numbers=[11,12,13,14,15,17,18,19,20,21,23,24];
-  for(const [index,number]of numbers.entries())assert.equal(keyChord('\x1b['+number+'~',{}),'f'+(index+1));
-  for(const [index,letter]of [...'PQRS'].entries())assert.equal(keyChord('\x1bO'+letter,{}),'f'+(index+1));
-  for(const [index,letter]of [...'ABCDE'].entries())assert.equal(keyChord('\x1b[['+letter,{}),'f'+(index+1));
-  assert.equal(keyChord('\x1b[1;5P',{}),'ctrl+f1');
-  assert.equal(keyChord('\x1b[24;3~',{}),'alt+f12');
-  for(const text of ['f2','[12~','\x1b[12~trailing','\x1b]52;clipboard\x07'])assert.equal(keyChord(text,{}),undefined);
 });

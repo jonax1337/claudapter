@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please remove credentials, tokens and conversation content from everything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `claudapter --version`, `claude --version`, `node --version` (and `bun --version` for the TUI)
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      options:
+        - native (claudapter)
+        - TUI (claudapter tui)
+        - CLI command
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and terminal
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics
+      description: Relevant `claudapter doctor` output or `CLAUDAPTER_TRACE=1` lines (they contain no bodies or credentials)
+      render: text

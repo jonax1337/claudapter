@@ -455,7 +455,7 @@ test('home shows provider identity and recent sessions without moving the prompt
   let release: (sessions: any[]) => void = () => {};
   const pending = new Promise<any[]>(resolve => { release = resolve; });
   const now = Date.now();
-  const controller = { ...idleController({ models: [
+  const controller = { ...idleController({ model: 'opus', models: [
     { id: 'opus', label: 'Opus', provider: 'anthropic', auth: 'unknown' },
     { id: 'gpt-6.1-sol', label: 'GPT 6.1', provider: 'chatgpt', auth: 'authenticated' },
     { id: 'glm-5.3', label: 'GLM 5.3', provider: 'zai', auth: 'missing' },
@@ -466,6 +466,7 @@ test('home shows provider identity and recent sessions without moving the prompt
     expect(before).toContain('● Claude');
     expect(before).toContain('● ChatGPT');
     expect(before).toContain('○ Z.ai · sign in');
+    expect(before).not.toContain('anthropic');
     const promptRow = (frame: string) => frame.split('\n').findIndex(line => line.includes('Ask anything'));
     release([{ sessionId: 's1', summary: 'Fix flaky gateway test', lastModified: now - 2 * 3_600_000 }]);
     const after = await settled(view);

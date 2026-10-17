@@ -127,7 +127,7 @@ export function degradeTheme(theme: Theme, depth: ColorDepth): Theme {
 }
 
 const PROVIDER_TOKENS: Record<string, keyof Theme> = { anthropic: 'providerClaude', chatgpt: 'providerChatgpt', zai: 'providerZai' };
-const PROVIDER_LABELS: Record<string, string> = { anthropic: 'Claude', chatgpt: 'ChatGPT', zai: 'Z.ai' };
+const PROVIDER_LABELS: Record<string, string> = { anthropic: 'Claude', chatgpt: 'ChatGPT', zai: 'Z.ai', ollama: 'Ollama' };
 
 /** Identity color of a provider id such as `anthropic`, `chatgpt` or `zai`. */
 export function providerColor(theme: Theme, provider: string): string {

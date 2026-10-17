@@ -123,6 +123,6 @@ test('providers map to their identity tokens and readable labels', () => {
   expect(providerColor(theme, 'chatgpt')).toBe(theme.providerChatgpt);
   expect(providerColor(theme, 'zai')).toBe(theme.providerZai);
   expect(providerColor(theme, 'custom')).toBe(theme.secondary);
-  expect([providerLabel('anthropic'), providerLabel('chatgpt'), providerLabel('zai'), providerLabel('custom')])
-    .toEqual(['Claude', 'ChatGPT', 'Z.ai', 'custom']);
+  expect([providerLabel('anthropic'), providerLabel('chatgpt'), providerLabel('zai'), providerLabel('ollama'), providerLabel('custom')])
+    .toEqual(['Claude', 'ChatGPT', 'Z.ai', 'Ollama', 'custom']);
 });

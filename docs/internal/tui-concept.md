@@ -164,4 +164,4 @@ Keep pure tests, isolated installed-engine checks and live subscription evidence
 separate. Near-limit conversations, mixed-size concurrent agents, additional
 providers and macOS/Linux terminal behavior must not be called verified without
 their own runs. Packaging and testing outside the checkout remain release gates.
-Current status is in [TASKS.md](../TASKS.md) and [verification.md](verification.md).
+Current status is in [TASKS.md](TASKS.md) and [verification.md](verification.md).

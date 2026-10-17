@@ -159,7 +159,7 @@ export function App(props: { controller: ViewController; actions?:(dialogs:Actio
   const history = () => state().entries.filter(entry => entry.kind === 'user').map(entry => entry.text);
   const padding = () => dimensions().width < COMPACT_WIDTH ? 1 : 2;
   const mainComposer = () => <Composer disabled={!state().ready || state().pending.length > 0 || !!overlay()} busy={state().busy}
-    model={activeModel()?.label ?? state().model} provider={activeModel()?.provider} mode={state().permissionMode}
+    model={activeModel()?.label ?? state().model} provider={activeModel() && providerLabel(activeModel()!.provider)} mode={state().permissionMode}
     history={history()} commands={commandSet.commands()} recalled={recalled()} onSubmit={commandSet.execute} />;
   // In an agent view the composer addresses that agent; slash commands still run as usual.
   const agentRoute = () => state().agentRoutes?.[agents.view()];
