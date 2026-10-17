@@ -12,8 +12,8 @@ Evidence: `docs/internal/verification.md`. Check items only after verification; 
 - [x] Suites: `npm run check` clean; Node 246 tests / 241 passed / 0 failed / 5 skipped; Bun 204 passed / 0 failed.
 - [x] Packed `claudapter-0.2.0-rc.7.tgz` (287.6 kB, 110 files, no `docs/internal`) installed outside the checkout: `--version` = 0.2.0-rc.7, help prints, `@opentui/core-win32-x64` present, OpenTUI native renderer loads, no Ink/React installed, no stale Ink modules in `dist`.
 - [ ] Interactive `claudapter tui` run from the rc.7 install (not repeated in this pass).
-- [ ] Remote CI run on GitHub (macOS/Linux) after the repository is published.
-- [ ] Create the GitHub repository, push, tag `v0.2.0-rc.7` and upload the tarball as a pre-release asset (external publishing needs Jonas).
+- [x] Remote CI (run 39049973780): Ubuntu, Windows and macOS green for check, Node suite, OpenTUI suite and packed install. The first two runs exposed a clean-checkout `check` failure (TUI typecheck read dist/*.d.ts) and a hyperlink-capability-dependent test assertion; both fixed.
+- [x] Public repository github.com/jonax1337/claudapter created with Jonas's approval; pre-release v0.2.0-rc.7 with the tarball asset (download verified, HTTP 200, 287,635 bytes). The tag points at the release commit; the two follow-up commits change only the check script, CI and a test.
 
 ## Ollama auto-detection (in progress)
 - [x] Auto-discovery at every registry build: `GET /api/tags` + `POST /api/show` per model (capabilities, `<arch>.context_length`), 1.5 s timeout; an unreachable server stays an empty catalog, per-model failures and reserved-ID collisions become launch notices instead of launch failures (`src/ollama.ts`, `buildRegistry`).
