@@ -98,6 +98,9 @@ export function assertCompatible(body: any, target: Model): void {
     if (!target.vision || /"type":"document"/.test(content)) throw new Error('Fallback target cannot accept this visual content.');
     throw new Error('Automatic fallback with images requires a verified multimodal token bound; switch manually.');
   }
+  // A profile account runs the same native Claude engine and session window as the requesting
+  // conversation; a local byte estimate cannot represent that capacity.
+  if (target.provider?.startsWith('anthropic@')) return;
   // UTF-8 bytes bound text tokens conservatively; never use a heuristic to silently truncate.
   const bytes=Buffer.byteLength(content), output=body.max_tokens??32000;
   if (!target.context || bytes + output + 4096 > target.context)

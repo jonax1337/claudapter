@@ -5,7 +5,9 @@
 Claudapter launches your installed Claude Code with a temporary loopback model
 gateway. It adds account-catalog GPT models to the native `/model` picker,
 optional GPT-backed native agents, read-only discovery, and explicitly enabled
-provider fallback. Version **0.2.0-rc.3** adds an optional custom TUI,
+provider fallback. Version **0.2.0-rc.5** adds account profiles: a second (or
+third) Claude account you can switch to per launch, use as `/model` entries
+(`sonnet@work`), or wire into fallback rules — plus an optional custom TUI,
 actual-provider usage accounting and maximum catalog context configuration.
 Both interfaces run your installed Claude Code; there is no Rookery runtime
 dependency. The TUI uses React, Ink and the pinned Claude Agent SDK.
@@ -27,7 +29,7 @@ model gateway. The explicit flag changes only this session, not saved permission
 npm ci --omit=optional
 npm test
 npm pack
-npm install --global --omit=optional .\claudapter-0.2.0-rc.3.tgz
+npm install --global --omit=optional .\claudapter-0.2.0-rc.5.tgz
 claudapter setup
 claudapter doctor
 ```
@@ -79,6 +81,45 @@ Open `/model`, select a row, and press **s** to switch for this session only.
 a GPT default can make a later plain `claude` session request an unsupported
 Anthropic model. Choose a native Claude model there to correct it. Claudapter
 does not race other sessions by restoring settings backups.
+
+## Multiple accounts (profiles)
+
+A profile is a named account slot with its own native Claude home (and optionally
+its own Codex/ChatGPT home) under `~/.claudapter/profiles/<name>/`. The wizard
+creates the slot and starts the official `claude auth login` flow for it; logins,
+sessions and settings stay completely separate from your main account.
+
+```powershell
+claudapter profile add work      # wizard: create the slot, optional own Codex login, official login flow
+claudapter profile list          # every profile with its Claude/ChatGPT login status
+claudapter profile login work    # re-run the official login flows for that profile
+claudapter profile remove work   # deletes the profile including its logins (asks first)
+claudapter profile default work  # start every plain `claudapter` under this profile; `--clear` undoes it
+claudapter --profile work        # one launch under the profile (also: `claudapter tui --profile work`)
+claudapter --profile none        # explicitly use the native homes this once
+```
+
+Without a profile active, nothing changes: Claudapter keeps using your normal
+`~/.claude` and `~/.codex`. An externally exported `CLAUDE_CONFIG_DIR`/`CODEX_HOME`
+conflicts with a profile and fails loudly instead of switching accounts silently.
+Login tokens are read-only; only the official CLIs refresh them.
+
+Two ways to *use* a second account from your main session:
+
+- **Pick it directly**: `/model` lists `sonnet@work`, `opus@work`, `haiku@work`
+  (and any exact versioned id like `claude-sonnet-5-5@work`). The request runs
+  the same native Claude model through the profile's account token; all native
+  Claude headers stay, only the authorization is the profile's.
+- **Automatic rotation**: use the id as an explicit fallback target. A rule
+  `"from": "claude-sonnet-5-5", "targets": ["sonnet@work"]` switches to the
+  second account on a rate limit, with the usual cooldown, notices and reset.
+  Enabling it authorizes sending that scope's conversation to the other account.
+
+Account models keep native context handling (no fake ceiling). Their quota
+windows are **unknown** — quota pre-emption never skips them. Missing or expired
+profile credentials stop with `401` and name the recovery command; nothing is
+ever sent under an unverified token. Multi-account use remains your
+responsibility under the providers' terms.
 
 `--settings <file-or-json>` is preserved and its picker rows are combined with
 the added rows; otherwise existing user picker rows are used. The highest native

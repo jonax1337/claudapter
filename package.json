@@ -1,6 +1,6 @@
 {
   "name": "claudapter",
-  "version": "0.2.0-rc.4",
+  "version": "0.2.0-rc.5",
   "description": "Your Claude Code. Your choice of models.",
   "type": "module",
   "license": "MIT",

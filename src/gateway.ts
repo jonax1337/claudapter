@@ -10,6 +10,7 @@ import { FallbackState, classify, assertCompatible, retryDelay, type Identity } 
 import { switchReason, type RouteScope } from './route-events.js';
 import { Providers } from './providers.js';
 import { UsageLedger, QuotaReader, type UsageAttempt } from './usage.js';
+import { ClaudeAccountAuth, profileClaudeHome } from './profiles.js';
 
 export const TOKEN_HEADER = 'x-claudapter-token';
 /** A provider whose fresh quota window reports this much usage is skipped for earlier fallback targets. */
@@ -118,6 +119,15 @@ export async function startGateway(options: GatewayOptions) {
         if (model.provider==='chatgpt' && await auth.status()!=='authenticated') {
           model.auth=await auth.status();model.availability='auth_failed';delete model.verifiedAt;
           return error(res,401,'ChatGPT credentials are missing, expired or unsupported. Refresh with the official Codex CLI, then retry.');
+        }
+        if (model.provider.startsWith('anthropic@')) {
+          const name=model.provider.slice('anthropic@'.length);
+          const status=await new ClaudeAccountAuth(profileClaudeHome(name)).status();
+          if (status!=='authenticated') {
+            model.auth=status;model.availability='auth_failed';delete model.verifiedAt;
+            return error(res,401,'Claude account "'+name+'" is missing or expired. Run `claudapter profile login '+name+'`, then retry.');
+          }
+          model.auth='authenticated';
         }
         if (model.id!==body.model) assertCompatible(body,model);
         // Pre-empt a near-exhausted provider before its 429 breaks a turn; the last target is always attempted.
@@ -296,6 +306,7 @@ function failureResponse(res: ServerResponse, upstream: Response, failure: any, 
   const headers: Record<string,string>={'content-type':'application/json','x-should-retry':'false'};
   upstream.headers.forEach((value,key)=>{if (key.startsWith('anthropic-ratelimit-') || key==='retry-after') headers[key]=value;});
   res.writeHead(upstream.status,headers);
+  const claudeTransport=provider==='anthropic'||provider.startsWith('anthropic@');
   res.end(JSON.stringify({type:'error',error:{type: typeof failure.error?.type==='string'?failure.error.type:'invalid_request_error',
-    message:provider==='anthropic'?safeMessage(String(failure.error?.message ?? 'Anthropic request failed.')):'Upstream '+provider+' rejected the request (HTTP '+upstream.status+').'}}));
+    message:claudeTransport?safeMessage(String(failure.error?.message ?? 'Anthropic request failed.')):'Upstream '+provider+' rejected the request (HTTP '+upstream.status+').'}}));
 }

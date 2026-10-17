@@ -5,6 +5,39 @@ Claude Code 2.1.301, Codex CLI 0.163.0. This file separates observed behavior
 from protocol documentation and remaining limitations. No external publication
 or remote CI execution occurred.
 
+## rc.4 interactive run and multi-account profiles — 2026-10-17
+
+- Interactive run of the globally installed 0.2.0-rc.4 artifact, driven through
+  computer use in a fresh untrusted scratch directory (outside the checkout):
+  workspace-trust dialog with both choices → home view (logo, provider rows,
+  composer, status bar) → one live turn on the configured Z.AI default model
+  returning the exact requested marker text → Ctrl+P command palette with
+  fuzzy list and descriptions → Esc close → Ctrl+C ×2 returns cleanly to the
+  shell. No leftover processes. This closes the rc.4 "interactive TUI run" gap.
+- Multi-account profiles (0.2.0-rc.5), fixture-tested: profile lifecycle and
+  reserved names; `--profile`/`--profile none`/default-profile activation with
+  loud refusal of conflicting `CLAUDE_CONFIG_DIR`/`CODEX_HOME`; `sonnet@work`
+  resolution restricted to Claude bases; registry aliases carrying the real
+  login state; gateway routing sends the profile's own OAuth token while
+  preserving native Claude headers and the base upstream model id; fallback
+  `claude → sonnet@work` switches on 429 and `fallback reset` restores the
+  native account; missing/expired profile credentials return 401 naming
+  `claudapter profile login <name>` with zero upstream requests. Credential
+  reads touch only `claudeAiOauth.accessToken`/`expiresAt` and never log tokens.
+- Suites: node 265 passed / 0 failed / 5 skipped (270, incl. 11 new profile
+  tests); bun TUI 204 passed / 0 failed across 10 files; `npm run check` clean.
+  A pre-existing parallel-run flake in `parity-native` (fixed 20 ms wait on the
+  trust dialog) was made robust with a bounded poll; it passed in isolation
+  before and passes in the full suite now.
+- Packaging: 0.2.0-rc.5 packed from the checkout, installed globally from the
+  tarball with `--omit=optional`; installed `claudapter --version` → 0.2.0-rc.5;
+  `--help` shows the profile commands; `profile list` runs against the real
+  (empty) profile store.
+- Not verified live: a real second Claude account — profile login flow, one
+  real `sonnet@<profile>` inference, and a rotation on a genuine limit remain
+  open (no second account was available). The `claude auth login`/`codex login`
+  child flows were not exercised end-to-end.
+
 ## OpenCode UI adoption — 2026-10-17 (in progress)
 
 

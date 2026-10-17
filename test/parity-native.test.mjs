@@ -141,7 +141,9 @@ test('the controller adopts the new directory, refreshes its lists and asks trus
     Object.assign(controller, { query, session: { registry: new Registry([]) }, cwd });
     controller.state.ready = true;
     const moving = controller.changeDirectory(target);
-    await new Promise(resolve => setTimeout(resolve, 20));
+    // Poll for the trust dialog instead of a fixed sleep: parallel test load can delay it past 20 ms.
+    await new Promise(resolve => { const deadline=Date.now()+2000;
+      const tick=()=>{ if(controller.state.pending.length||Date.now()>deadline) resolve(); else setTimeout(tick,5); }; tick(); });
     assert.equal(controller.state.pending[0].title, 'Do you trust this project?');
     assert.ok(controller.state.pending[0].description.includes(target));
     assert.equal(controller.state.pending[0].choices[controller.state.pending[0].defaultIndex].value, false);

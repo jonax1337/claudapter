@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Config } from './config.js';
 import { CodexAuth } from './auth.js';
 import type { Model } from './models.js';
+import { ClaudeAccountAuth, profileClaudeHome } from './profiles.js';
 import { toResponsesRequest } from './translate.js';
 
 export interface ProviderRequest {
@@ -27,12 +28,17 @@ export class Providers {
     }
     const headers = new Headers({'content-type':'application/json'});
     let url: string;
-    if (model.provider==='anthropic') {
+    if (model.provider==='anthropic' || model.provider.startsWith('anthropic@')) {
       if (!this.config.claude) throw new Error('Claude provider is disabled.');
       url='https://api.anthropic.com';
       for (const [key,value] of Object.entries(request.headers))
         if (value && (key.startsWith('anthropic-') || key.startsWith('x-claude-code-') || key.startsWith('x-stainless-') || ['authorization','x-api-key','user-agent','x-app'].includes(key)))
           headers.set(key,Array.isArray(value)?value.join(', '):value);
+      // A profile account keeps every native Claude header but speaks with its own read-only OAuth token.
+      if (model.provider!=='anthropic') {
+        const account = new ClaudeAccountAuth(profileClaudeHome(model.provider.slice('anthropic@'.length)));
+        headers.set('authorization','Bearer '+await account.accessToken());
+      }
       if (headers.get('authorization')==='Bearer claudapter-local-only') throw new Error('No Claude credential is configured.');
     } else {
       const provider = this.config.providers.find(p=>p.id===model.provider);

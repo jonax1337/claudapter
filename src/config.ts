@@ -11,8 +11,12 @@ export interface FallbackRule {
   errors: ('rate_limit' | 'unavailable')[]; retries: number; timeoutMs: number; cooldownMs: number;
 }
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+/** Profile names become directories and `model@profile` ids; they stay lowercase slugs. */
+export const PROFILE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export interface Config {
   version: 1; chatgpt: boolean; claude: boolean;
+  /** Profile activated when no --profile flag is given; absent keeps the native homes. */
+  profile?: string;
   /** Claudapter default model for TUI sessions; absent keeps the native default. */
   model?: string;
   /** Per-model default reasoning effort applied at session start and model switch. */
@@ -38,9 +42,10 @@ function keys(value: any, allowed: string[]) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k=>!allowed.includes(k))) throw new Error('Invalid or unknown configuration field.');
 }
 export function validateConfig(value: any): Config {
-  keys(value,['version','chatgpt','claude','model','modelEffort','providers','agents','fallback']);
+  keys(value,['version','chatgpt','claude','profile','model','modelEffort','providers','agents','fallback']);
   const c = {...defaults(),...value};
   if (c.version!==1 || typeof c.chatgpt!=='boolean' || typeof c.claude!=='boolean' || !Array.isArray(c.providers) || !Array.isArray(c.fallback)) throw new Error('Invalid Claudapter configuration.');
+  if (c.profile!==undefined && !PROFILE_NAME.test(c.profile)) throw new Error('Default profile must be a lowercase slug profile name.');
   if (c.model!==undefined && !id(c.model)) throw new Error('Default model must be a known model id.');
   if (c.modelEffort!==undefined) {
     const modelEffort = c.modelEffort as Record<string, string>;

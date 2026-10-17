@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { codexHome, type AuthState } from './auth.js';
 import { CodexAuth } from './auth.js';
 import type { Config } from './config.js';
+import { accountProvider, ClaudeAccountAuth, listProfiles, profileClaudeHome, splitAccountModel } from './profiles.js';
 
 export interface Model {
   id: string; provider: string; upstream: string; label: string;
@@ -39,7 +40,7 @@ export class Registry {
   readonly entries = new Map<string, Model>();
   constructor(models: Model[] = []) { for (const m of models) this.add(m); }
   add(model: Model): void {
-    if (model.provider!=='anthropic' && /^(?:claude-|sonnet$|opus$|haiku$|fable$|default$|opusplan$)/i.test(model.id))
+    if (model.provider!=='anthropic' && !model.provider.startsWith('anthropic@') && /^(?:claude-|sonnet$|opus$|haiku$|fable$|default$|opusplan$)/i.test(model.id))
       throw new Error('External model collides with a reserved Claude model ID: '+model.id);
     if (this.entries.has(model.id)) throw new Error('Duplicate model ID: ' + model.id);
     this.entries.set(model.id, model);
@@ -47,6 +48,14 @@ export class Registry {
   resolve(id: string): Model {
     const known = this.entries.get(id);
     if (known) return known;
+    const account = splitAccountModel(id);
+    if (account) {
+      const base = this.resolve(account.base);
+      if (base.provider!=='anthropic') throw new Error('Profile account routing applies only to Claude models: '+id);
+      const routed: Model = {...base,id,provider:accountProvider(account.profile),upstream:base.upstream,
+        label:base.label+' · '+account.profile,source:'Claude model through profile "'+account.profile+'"; read-only account credentials',auth:'unknown'};
+      this.add(routed); return routed;
+    }
     // Anthropic validates its own versioned IDs; arbitrary foreign IDs never route there.
     if (/^claude-(?:opus|sonnet|haiku|fable)-[a-z0-9.-]+$/.test(id)) {
       const model: Model = { id, upstream: id, provider: 'anthropic', label: id, tools: true, vision: true,
@@ -61,7 +70,8 @@ export class Registry {
 export function nativeContextSettings(registry: Registry): {
   env: Record<string, string>; modelSettings: Record<string, {autoCompactWindow: number}>;
 } {
-  const external = registry.list().filter(model => model.provider !== 'anthropic');
+  // Profile-account models are native Claude transports; the native engine keeps owning their window.
+  const external = registry.list().filter(model => model.provider !== 'anthropic' && !model.provider.startsWith('anthropic@'));
   if (!external.length) return {env:{}, modelSettings:{}};
   for (const model of external) if (!Number.isSafeInteger(model.context) || model.context! < 1024)
     throw new Error('Cannot configure the native context window for '+model.id+': catalog capacity is unknown or invalid. Refresh the catalog or configure its capacity.');
@@ -82,6 +92,10 @@ export async function buildRegistry(config: Config, auth: CodexAuth): Promise<Re
     tools:true,vision:true,efforts:[],source:'Native Claude Code alias; resolved by the installed client',auth:'unknown'});
   for (const p of config.providers) for (const m of p.models) registry.add({...m,upstream:m.upstream??m.id,provider:p.id,label:m.id,
     contextSource:'provider configuration',efforts:[],source:'Explicit user provider configuration',auth:process.env[p.keyEnv]?'authenticated':'missing'});
+  if (config.claude) for (const profile of await listProfiles().catch(() => [])) {
+    const account = await new ClaudeAccountAuth(profileClaudeHome(profile.name)).status();
+    for (const id of ['sonnet','opus','haiku']) registry.resolve(id+'@'+profile.name).auth = account;
+  }
   for (const model of Object.values(config.agents)) registry.resolve(model);
   for (const rule of config.fallback.filter(r=>r.enabled)) {
     registry.resolve(rule.from);

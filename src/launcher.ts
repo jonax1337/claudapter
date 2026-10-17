@@ -48,7 +48,10 @@ export async function prepareSettings(args: string[], registry: Registry, config
     throw new Error('Native fallback and Claudapter fallback cannot own the same launch. Remove the native fallback chain or disable Claudapter rules.');
   const picker=explicit.modelPicker??user.modelPicker??{};
   const options=[...(picker.options??[])];
-  for(const m of registry.list().filter(m=>m.provider!=='anthropic')) if(!options.some(o=>o.model===m.id)) options.push({model:m.id,label:m.label,description:m.provider+'; catalog entry, not guaranteed availability'});
+  for(const m of registry.list().filter(m=>m.provider!=='anthropic')) if(!options.some(o=>o.model===m.id))
+    options.push({model:m.id,label:m.label,description:m.provider.startsWith('anthropic@')
+      ?'Claude through profile '+m.provider.slice('anthropic@'.length)
+      :m.provider+'; catalog entry, not guaranteed availability'});
   const context=nativeContextSettings(registry);
   const modelSettings={...explicit.modelSettings};
   for(const [id,window] of Object.entries(context.modelSettings)) modelSettings[id]={...user.modelSettings?.[id],...project.modelSettings?.[id],...local.modelSettings?.[id],...explicit.modelSettings?.[id],...window};
@@ -140,7 +143,7 @@ export async function installedClaudePath(): Promise<string> {
 export async function launch(args: string[], config: Config, dependencies: SessionDependencies = {}): Promise<number> {
   const session=await prepareSession(args,config,dependencies);
   try {
-    if(!dependencies.quiet)process.stderr.write('Claudapter session '+session.runtimeId+'. /model: press s to switch without saving your default.\n');
+    if(!dependencies.quiet)process.stderr.write('Claudapter session '+session.runtimeId+(process.env.CLAUDAPTER_PROFILE?' · profile '+process.env.CLAUDAPTER_PROFILE:'')+'. /model: press s to switch without saving your default.\n');
     const child=spawn('claude',[...session.args,'--settings',session.settings,'--plugin-dir',session.plugin],{stdio:'inherit',shell:false,windowsHide:true,env:session.env});
     const stop=()=>{child.kill('SIGTERM');};
     process.on('SIGTERM',stop);

@@ -2,6 +2,15 @@
 
 Evidence: `docs/verification.md`. Check items only after verification; record blocked and untested cases explicitly. M1–M5 below preserve the original 0.1.0-rc.1 evidence; they do not imply that every flow has been rerun for the 0.2.0 extension.
 
+## Multi-account profiles and account rotation (0.2.0-rc.5)
+- [x] Profile slot lifecycle: `claudapter profile add|login|list|remove|default` wizard with official `claude auth login`/`codex login` flows, separate Claude/Codex homes under `~/.claudapter/profiles`, reserved/invalid names rejected, interactive confirmation before destructive removal.
+- [x] Launch selection: `--profile <name>|none` (CLI and TUI) and optional default profile; activation fails loudly on conflicting `CLAUDE_CONFIG_DIR`/`CODEX_HOME` instead of switching accounts silently; `profile` subcommands stay usable with a broken default.
+- [x] Account routing: `sonnet@<profile>` style ids resolve only on Claude bases, keep native headers and context handling, send with the profile's read-only OAuth token (unexpired file credentials only; official CLI owns refresh), and appear in `/model` with an honest description.
+- [x] Rotation: account ids work as explicit fallback targets with the existing cooldown/notice/reset machinery; missing/expired account credentials stop with 401 plus recovery command; quota windows for accounts stay unknown so pre-emption never skips them.
+- [x] Tests: 11 new profile tests (lifecycle, activation conflicts, credential states, id resolution, registry aliases, flag extraction, gateway account routing, fallback switch and reset, credential failure isolation); node suite 265 passed / 0 failed / 5 skipped, bun TUI suite 204 passed; TypeScript checks clean. Fixed a pre-existing parallel-run flake in the parity-native trust-dialog test (fixed 20 ms sleep → bounded poll).
+- [x] Packaging: 0.2.0-rc.5 packed from the checkout, installed globally outside it with `--omit=optional`; `claudapter --version`, `--help` profile lines and `profile list` verified from the installed artifact.
+- [ ] Live acceptance: a real second Claude account (profile login, one `sonnet@<profile>` turn, one real-limit rotation) — no second account was available during this run; current evidence is fixture-only for account routing.
+
 ## TUI parity push: transcript, native parity, fallback UX, sub-agents, polish (in progress)
 - [x] Transcript parity: diff/edit/write blocks with tree-sitter highlighting and collapse, Bash/Read/Grep/Web rows, TodoWrite checklist, recorded permission rows, image rows with open/copy, fenced-code blocks, tables and wide-character-safe cell-width helpers (`layout.ts`), plus `slots` extension points. Fixture tests only.
 - [x] Native parity: `/btw` side questions, `/cd` with revalidation and trust renewal, Vim mode, kill ring and paste handling, `/account` `/privacy` `/upgrade` `/keymap` `/tutorial`, honest native-only dialogs; triage in `docs/parity-plan.md`.
@@ -12,7 +21,7 @@ Evidence: `docs/verification.md`. Check items only after verification; record bl
 - [x] Integrated suites (final): `npm run check` 0 errors; node suite 254 passed / 0 failed / 5 skipped of 259; bun suite 204 passed across 10 files.
 - [ ] Live acceptance: fallback visibility and one-key recovery on a real limit, agent relay delivery and resume, a successful `/btw` answer, alt-key chords in Windows Terminal, themes/colors/`?`/Esc, resize during a busy turn.
 - [ ] Decisions and follow-ups: remove the superseded Ink TUI and its Ink/React dependencies (needs approval), dedupe main-stream handling against `LiveTranscript`, drop the duplicate agent line in the TasksStrip, unused-export cleanup.
-- [x] Packed artifact rebuild and outside-checkout install test: 0.2.0-rc.4 packed from the committed checkout (commit 5155b90), installed globally from a temp directory with `--omit=optional`; `claudapter --version` returns 0.2.0-rc.4. Interactive TUI run not yet performed.
+- [x] Packed artifact rebuild and outside-checkout install test: 0.2.0-rc.4 packed from the committed checkout (commit 5155b90), installed globally from a temp directory with `--omit=optional`; `claudapter --version` returns 0.2.0-rc.4. Interactive TUI run performed 2026-10-17 (see verification.md): trust dialog, home view, live Z.AI glm-5.3 turn, command palette, clean Ctrl+C exit.
 
 ## OpenCode UI adoption
 - [x] Pin upstream source and retain MIT provenance; adapt home, composer, viewport and dialog structure.
