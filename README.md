@@ -1,6 +1,10 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="claudapter — Your Claude Code. Your choice of models." width="560">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
+  <img src="docs/assets/logo-dark.svg" alt="claudapter — Your Claude Code. Your choice of models." width="560">
+</picture>
 
 [![Release](https://img.shields.io/badge/release-0.2.0--rc.7-d97757?style=flat-square)](https://github.com/jonax1337/claudapter/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
