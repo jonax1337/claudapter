@@ -130,36 +130,7 @@ claudapter tui -- --model gpt-6.1-sol --permission-mode default
 `claudapter tui` opens Claudapter's own terminal interface, built on
 [OpenTUI](https://github.com/anomalyco/opentui) and adapted in parts from
 [OpenCode](https://github.com/anomalyco/opencode), on top of the same Claude Code
-engine, sessions and permissions.
-
-```text
-┃
-┃  Why does the gateway test fail on Windows?
-┃
-
-   → Read src/gateway.ts · 3 lines
-
-   $ Bash npm test -- --test-name-pattern gateway
-
-   ┃  ok
-
-   The test compares paths with / separators. On Windows the gateway returns backslash
-   paths, so the assertion fails.
-
-   - normalize with path.posix before comparing
-   - keep the production code unchanged
-
-┃
-┃  Ask anything, @ to mention a file, / for commands
-┃
-┃  Ask GLM-5.3 Z.ai
-┃
-
-● Ready        default   ╸━━━━━━━━━ 48.2K / 1M 5%   claude-sonnet-5-5 → glm-5.3 · back in 4m
-```
-<sub>A real frame from the TUI test renderer: a Sonnet rate limit was routed to GLM-5.3 by an explicit fallback rule, and the status bar says so.</sub>
-
-Highlights:
+engine, sessions and permissions. Highlights:
 
 - searchable command palette (`ctrl+p`), slash-command completion, prompt history
 - model picker with favorites, provider identity and live quota/context panels (`/usage`, `/context`)
