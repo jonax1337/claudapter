@@ -12,7 +12,7 @@ Evidence: `docs/verification.md`. Check items only after verification; record bl
 - [x] Integrated suites (final): `npm run check` 0 errors; node suite 254 passed / 0 failed / 5 skipped of 259; bun suite 204 passed across 10 files.
 - [ ] Live acceptance: fallback visibility and one-key recovery on a real limit, agent relay delivery and resume, a successful `/btw` answer, alt-key chords in Windows Terminal, themes/colors/`?`/Esc, resize during a busy turn.
 - [ ] Decisions and follow-ups: remove the superseded Ink TUI and its Ink/React dependencies (needs approval), dedupe main-stream handling against `LiveTranscript`, drop the duplicate agent line in the TasksStrip, unused-export cleanup.
-- [ ] Packed artifact rebuild and outside-checkout install test.
+- [x] Packed artifact rebuild and outside-checkout install test: 0.2.0-rc.4 packed from the committed checkout (commit 5155b90), installed globally from a temp directory with `--omit=optional`; `claudapter --version` returns 0.2.0-rc.4. Interactive TUI run not yet performed.
 
 ## OpenCode UI adoption
 - [x] Pin upstream source and retain MIT provenance; adapt home, composer, viewport and dialog structure.

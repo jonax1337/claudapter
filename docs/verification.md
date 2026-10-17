@@ -219,6 +219,12 @@ or remote CI execution occurred.
   delivery and resume, a successful `/btw` answer, Alt-key chords in Windows
   Terminal, themes/colours/`NO_COLOR` in a real terminal, resize during a busy
   turn, and the packed artifact.
+- 0.2.0-rc.4 release packaging (after commit 5155b90): `npm pack` from the
+  clean checkout (prepack build included, 126 files), tarball moved to a
+  fresh temp directory outside the checkout and installed globally with
+  `--omit=optional`; `claudapter --version` from that directory returns
+  **0.2.0-rc.4**. The interactive `claudapter tui` run itself was left to the
+  user, so UI live acceptance remains open.
 - All 16 admin tests passed with native writer testing enabled, using disposable
   homes. The native writer test uses a fixture query and the actual CLI writer;
   this is not live OAuth or every native-dialog end-to-end acceptance.
