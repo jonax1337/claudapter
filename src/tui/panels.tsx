@@ -14,8 +14,23 @@ export type TranscriptEntry = {
   text: string;
   toolName?: string;
   status?: 'running' | 'done' | 'error';
+  /** Legacy flat rendering of tool input and output; structured consumers use `input`/`output`. */
   details?: string;
   agent?: string;
+  /** Parsed tool input. */
+  input?: Record<string, unknown>;
+  /** Flattened tool result text, capped at 16000 characters. */
+  output?: string;
+  isError?: boolean;
+  /** Controller task that this tool call spawned. */
+  taskId?: string;
+  /** Estimated thinking tokens; the text may be empty because the model redacts it. */
+  thinkingTokens?: number;
+  redacted?: boolean;
+  /** Milliseconds from tool start to its result. */
+  elapsedMs?: number;
+  /** Raw structured tool result (e.g. Edit/Write patch data), at most 16 KB serialized. */
+  result?: unknown;
 };
 export type Entry = TranscriptEntry;
 

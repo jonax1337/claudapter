@@ -119,7 +119,7 @@ export function App({controller,preferences,onClose}:{controller:TuiController;p
       ]);return;
     }
     if(command==='/tasks'){
-      menu('BACKGROUND TASKS',Object.entries(state.tasks).map(([id,task])=>({label:task.description??task.name??id,detail:task.status??task.subtype,run:()=>menu(task.description??id,[{label:'Inspect',run:()=>view('TASK',task)},{label:'Read task output',run:async()=>view('TASK OUTPUT',await invokeCompat(controller.query!,'getTaskOutput',{taskId:id}))},{label:'Stop task',run:()=>confirm('Stop this task?',id,()=>controller.stopTask(id))}])})));return;
+      menu('BACKGROUND TASKS',Object.entries(state.tasks).map(([id,task])=>({label:task.title,detail:task.status,run:()=>menu(task.title,[{label:'Inspect',run:()=>view('TASK',task)},{label:'Read task output',run:async()=>view('TASK OUTPUT',await invokeCompat(controller.query!,'getTaskOutput',{taskId:id}))},{label:'Stop task',run:()=>confirm('Stop this task?',id,()=>controller.stopTask(id))}])})));return;
     }
     if(command==='/resume'){
       if(argument){await controller.resume(argument);setAttachments([]);setOverlay(null);setPanel('chat');setScroll(0);return;}

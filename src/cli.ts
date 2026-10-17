@@ -10,6 +10,7 @@ import { buildRegistry } from './models.js';
 import { loadConfig, saveConfig, configHome } from './config.js';
 import { launch } from './launcher.js';
 import { TOKEN_HEADER } from './gateway.js';
+import { mergePreset, presetFor, PROVIDER_PRESETS } from './provider-presets.js';
 import { VERSION } from './version.js';
 
 async function main() {
@@ -20,7 +21,7 @@ async function main() {
   const auth=new CodexAuth();
   if(args[0]==='--version') {console.log(VERSION);return;}
   if(args[0]==='--help'||args[0]==='help') {
-    console.log('Claudapter — Your Claude Code. Your choice of models.\n\nclaudapter [-- <native Claude arguments>]\nclaudapter tui [-- <Claude arguments>]\nclaudapter usage [--refresh] [--json]\nclaudapter setup\nclaudapter models | providers | doctor\nclaudapter provider add\nclaudapter agents enable <ChatGPT model ID>\nclaudapter fallback show\nclaudapter fallback reset <session runtime ID> [conversation ID] [agent ID]\nclaudapter sessions\n\nFallback is off by default. Edit trusted '+join(configHome(),'config.json')+' to enable explicit rules.\nUse /model then s in native mode; the custom TUI model picker is session-only.');return;
+    console.log('Claudapter — Your Claude Code. Your choice of models.\n\nclaudapter [-- <native Claude arguments>]\nclaudapter tui [-- <Claude arguments>]\nclaudapter usage [--refresh] [--json]\nclaudapter setup\nclaudapter models | providers | doctor\nclaudapter provider add ['+PROVIDER_PRESETS.map(p=>p.id).join('|')+']\nclaudapter agents enable <ChatGPT model ID>\nclaudapter fallback show\nclaudapter fallback reset <session runtime ID> [conversation ID] [agent ID]\nclaudapter sessions\n\nFallback is off by default. Edit trusted '+join(configHome(),'config.json')+' to enable explicit rules.\nUse /model then s in native mode; the custom TUI model picker is session-only.');return;
   }
   // PowerShell's npm .ps1 shim can consume the boundary; native flags remain unambiguous.
   if(args[0]?.startsWith('-')) {process.exitCode=await launch(args,config);return;}
@@ -44,6 +45,19 @@ async function main() {
     if(!stdin.isTTY) throw new Error('provider add needs an interactive terminal; alternatively edit the documented config schema.');
     const rl=createInterface({input:stdin,output:stdout});
     try {
+      const preset=args[2]?presetFor(args[2]):undefined;
+      if(args[2]&&!preset) throw new Error('Unknown provider preset: '+args[2]+'. Available: '+PROVIDER_PRESETS.map(p=>p.id).join(', ')+'.');
+      if(preset) {
+        console.log(preset.label+'\nBase URL: '+preset.baseUrl+'\nSet the key before use: '+preset.keyEnv);
+        preset.models.forEach((m,i)=>console.log('  '+(i+1)+'. '+m.id+' · '+m.context+' tokens'+(m.vision?' · vision':'')));
+        const selection=await rl.question('Models to enable (comma numbers or all): ');
+        const ids=selection.trim().toLowerCase()==='all'?preset.models.map(m=>m.id):
+          selection.split(',').map(n=>preset.models[Number(n.trim())-1]?.id).filter(Boolean);
+        await saveConfig(mergePreset(config,preset,ids));
+        console.log('Provider "'+preset.id+'" configured with '+ids.length+' model(s). No credentials were stored and no inference was requested.');
+        return;
+      }
+      console.log('Presets: '+PROVIDER_PRESETS.map(p=>p.id+' ('+p.baseUrl+')').join(', ')+'\nEmpty input below starts the manual wizard.');
       const id=await rl.question('Provider ID: ');const baseUrl=await rl.question('Anthropic-compatible HTTPS base URL: ');
       const keyEnv=await rl.question('Environment variable containing its key (not the key itself): ');
       const model=await rl.question('Model ID: ');const context=Number(await rl.question('Documented context capacity in tokens: '));

@@ -11,6 +11,8 @@ import { Providers } from './providers.js';
 import { UsageLedger, QuotaReader, type UsageAttempt } from './usage.js';
 
 export const TOKEN_HEADER = 'x-claudapter-token';
+/** A provider whose fresh quota window reports this much usage is skipped for earlier fallback targets. */
+const QUOTA_PREEMPT_PERCENT = 95;
 export interface RouteEvent {
   time: string; event: string; session?: string; agent?: string; requestClass?: string;
   requested: string; actual: string; provider: string; status?: number;
@@ -104,6 +106,7 @@ export async function startGateway(options: GatewayOptions) {
       let upstream!: Response;
       const targets=policy?[model.id,...policy.targets.filter(id=>id!==model.id)]:[model.id];
       let lastReason=''; let retryHint=0;
+      if (policy) void quotas.refresh(controller.signal).catch(()=>{});
       outer: for (let targetIndex=0;targetIndex<targets.length;targetIndex++) {
         model=options.registry.resolve(targets[targetIndex]);
         if (model.provider==='chatgpt' && await auth.status()!=='authenticated') {
@@ -111,6 +114,10 @@ export async function startGateway(options: GatewayOptions) {
           return error(res,401,'ChatGPT credentials are missing, expired or unsupported. Refresh with the official Codex CLI, then retry.');
         }
         if (model.id!==body.model) assertCompatible(body,model);
+        // Pre-empt a near-exhausted provider before its 429 breaks a turn; the last target is always attempted.
+        if (targetIndex<targets.length-1 && quotas.preempt(model.provider,QUOTA_PREEMPT_PERCENT)) {
+          lastReason='quota_near_limit'; continue;
+        }
         event={...event,actual:model.id,provider:model.provider};
         if (targetIndex>0) emit({...event,event:'fallback',reason:lastReason});
         for (let attempt=0;attempt<=(policy?.retries??0);attempt++) {

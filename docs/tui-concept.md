@@ -1,6 +1,6 @@
 # Optional Claudapter TUI: implemented architecture
 
-Status: implemented for **0.2.0-rc.2**, with incomplete native-feature parity.
+Status: implemented for **0.2.0-rc.3**, with incomplete native-feature parity.
 The original brief required a native-only interface. The user's subsequent
 instruction explicitly adds a custom TUI, maximum model context and correct
 provider usage, and permits development subagents for this extension. Native

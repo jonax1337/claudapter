@@ -146,6 +146,18 @@ export class QuotaReader {
       state:windows.some(w=>w.usedPercent!==null)?'available':'unknown',reason:windows.some(w=>w.usedPercent!==null)?undefined:'Claude SDK did not provide available account quota windows.'});
     this.nextRefresh.set('anthropic',Date.now()+60_000);
   }
+
+  /**
+   * True when a fresh available window reports usage at or above `thresholdPercent` and has not reset.
+   * Quota telemetry alone never refuses a request; callers only use it to prefer a later fallback target.
+   */
+  preempt(provider: string, thresholdPercent: number, now = Date.now()): boolean {
+    const value = this.values.get(provider);
+    if (!value || value.state !== 'available' || !value.updatedAt || now - Date.parse(value.updatedAt) > 60_000) return false;
+    return value.windows.some(window => window.usedPercent !== null
+      && window.usedPercent >= thresholdPercent
+      && (window.resetsAt === null || Date.parse(window.resetsAt) > now));
+  }
   snapshot(): ProviderUsage[] {
     return structuredClone([...this.values.values()].map(value=>({...value,stale:!value.updatedAt || Date.now()-Date.parse(value.updatedAt)>60_000})));
   }

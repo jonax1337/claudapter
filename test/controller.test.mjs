@@ -208,7 +208,7 @@ async function startupFixture(t,args=[],overrides={}) {
   const source='const h=globalThis[Symbol.for('+JSON.stringify(Symbol.keyFor(symbol))+')];';
   const data=text=>'data:text/javascript,'+encodeURIComponent(source+text);
   const modules={
-    '@anthropic-ai/claude-agent-sdk':data('export const query=x=>h.query(x),listSessions=async()=>[],getSessionMessages=async id=>{h.restored.push(id);return[];},renameSession=async()=>{},forkSession=async()=>({sessionId:"fork"}),deleteSession=async()=>{};'),
+    '@anthropic-ai/claude-agent-sdk':data('export const query=x=>h.query(x),listSessions=async()=>[],getSessionInfo=async id=>h.info?.[id],getSessionMessages=async id=>{h.restored.push(id);return h.history?.[id]??[];},getSubagentMessages=async(id,agent)=>h.subagents?.[agent]??[],renameSession=async()=>{},forkSession=async()=>({sessionId:"fork"}),deleteSession=async()=>{};'),
     '../launcher.js':data('export const prepareSession=(...a)=>h.prepareSession(...a),installedClaudePath=async()=>"fixture-claude";'),
     './trust.js':data('export const trustDirectory=async cwd=>{h.trustRequested?.();if(h.trustWait)await h.trustWait;return cwd;},isWorkspaceTrusted=async()=>h.trusted,isHomeDirectory=async()=>h.home===true;'),
   };

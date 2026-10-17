@@ -10,8 +10,13 @@ export interface FallbackRule {
   enabled: boolean; from: string; targets: string[]; scopes: string[];
   errors: ('rate_limit' | 'unavailable')[]; retries: number; timeoutMs: number; cooldownMs: number;
 }
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export interface Config {
   version: 1; chatgpt: boolean; claude: boolean;
+  /** Claudapter default model for TUI sessions; absent keeps the native default. */
+  model?: string;
+  /** Per-model default reasoning effort applied at session start and model switch. */
+  modelEffort?: Record<string, string>;
   providers: CompatibleProvider[]; agents: Record<string, string>; fallback: FallbackRule[];
 }
 export const defaults = (): Config => ({ version:1, chatgpt:true, claude:true, providers:[], agents:{}, fallback:[] });
@@ -33,11 +38,17 @@ function keys(value: any, allowed: string[]) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k=>!allowed.includes(k))) throw new Error('Invalid or unknown configuration field.');
 }
 export function validateConfig(value: any): Config {
-  keys(value,['version','chatgpt','claude','providers','agents','fallback']);
+  keys(value,['version','chatgpt','claude','model','modelEffort','providers','agents','fallback']);
   const c = {...defaults(),...value};
   if (c.version!==1 || typeof c.chatgpt!=='boolean' || typeof c.claude!=='boolean' || !Array.isArray(c.providers) || !Array.isArray(c.fallback)) throw new Error('Invalid Claudapter configuration.');
+  if (c.model!==undefined && !id(c.model)) throw new Error('Default model must be a known model id.');
+  if (c.modelEffort!==undefined) {
+    const modelEffort = c.modelEffort as Record<string, string>;
+    keys(modelEffort,Object.keys(modelEffort));
+    for (const [model, effort] of Object.entries(modelEffort))
+      if (!id(model) || !(EFFORT_LEVELS as readonly string[]).includes(effort)) throw new Error('Per-model effort must be a model id and one of: '+EFFORT_LEVELS.join(', ')+'.');
+  }
   keys(c.agents,Object.keys(c.agents ?? {}));
-  for (const [name, model] of Object.entries(c.agents)) if (!/^[a-z][a-z0-9-]{0,63}$/.test(name) || !id(model)) throw new Error('Invalid agent name or model.');
   const seen = new Set<string>(['anthropic','chatgpt']);
   for (const p of c.providers) {
     keys(p,['id','baseUrl','keyEnv','models']);

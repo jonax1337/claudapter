@@ -88,3 +88,34 @@ test('SSE handles split CRLF, multiple data lines and rejects malformed or trunc
   const items=[];for await(const item of readServerSentEvents(stream(['data: {"type":\r','\ndata: "ok"}\r\n\r','\n'])))items.push(item);assert.deepEqual(items,[{type:'ok'}]);
   for(const bad of ['data: {bad}\n\n','data: {"unfinished":'])await assert.rejects(async()=>{for await(const _ of readServerSentEvents(stream([bad]))){};});
 });
+import { PROVIDER_PRESETS, mergePreset, presetFor } from '../dist/provider-presets.js';
+
+test('provider presets satisfy the strict provider configuration contract', () => {
+  for (const preset of PROVIDER_PRESETS) {
+    const config = mergePreset({ ...defaults() }, preset, preset.models.map(model => model.id));
+    validateConfig(config);
+    const provider = config.providers.find(entry => entry.id === preset.id);
+    assert.equal(provider.baseUrl, preset.baseUrl);
+    assert.equal(provider.keyEnv, preset.keyEnv);
+    assert.equal(provider.models.length, preset.models.length);
+  }
+  assert.ok(presetFor('zai')?.models.some(model => model.id === 'glm-5.3' && !model.vision));
+  assert.equal(presetFor('unknown'), undefined);
+});
+test('preset merge rejects duplicate providers and empty model selections without mutating config', () => {
+  const preset = presetFor('zai');
+  assert.ok(preset);
+  const config = mergePreset({ ...defaults() }, preset, ['glm-5.3']);
+  assert.throws(() => mergePreset(config, preset, ['glm-5.3-flash']), /already configured/);
+  assert.throws(() => mergePreset({ ...defaults() }, preset, ['not-a-glm']), /at least one/);
+  assert.deepEqual(config.providers[0].models.map(model => model.id), ['glm-5.3']);
+  assert.deepEqual({ ...defaults() }.providers, []);
+});
+
+test('default model and per-model effort fields validate strictly', () => {
+  validateConfig({ ...defaults(), model: 'glm-5.3', modelEffort: { 'glm-5.3': 'max' } });
+  assert.throws(() => validateConfig({ ...defaults(), model: 'not a model!' }), /model/);
+  assert.throws(() => validateConfig({ ...defaults(), modelEffort: { 'glm-5.3': 'turbo' } }), /effort/);
+  assert.throws(() => validateConfig({ ...defaults(), modelEffort: { 'not a model!': 'max' } }), /effort/);
+  assert.throws(() => validateConfig({ ...defaults(), unknownField: true }), /field/);
+});

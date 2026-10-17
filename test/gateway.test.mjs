@@ -12,7 +12,9 @@ const frame=(value)=>'data: '+JSON.stringify(value)+'\n\n';
 const completion=()=>frame({type:'response.output_text.delta',delta:'OK'})+frame({type:'response.completed',response:{model:'gpt-test',usage:{input_tokens:12,output_tokens:2,input_tokens_details:{cached_tokens:5}}}});
 async function fixture(t,{fallback=[],handler,models=[{...model}],config={},options={}}={}) {
   const requests=[];
-  const upstream=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;requests.push({headers:req.headers,body:JSON.parse(raw),url:req.url});
+  const upstream=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;
+    if(req.url.includes('/usage')){res.writeHead(200,{'content-type':'application/json'});return res.end('{}');}
+    requests.push({headers:req.headers,body:JSON.parse(raw),url:req.url});
     if(handler)return handler(req,res,requests);
     res.writeHead(200,{'content-type':'text/event-stream'});res.end(completion());});
   upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
@@ -183,4 +185,39 @@ test('quota endpoint refreshes both observed accounts without exposing incoming 
   const snapshot=await response.json();assert.ok(snapshot.providers.every(p=>p.state==='available'));
   assert.equal(calls.filter(c=>c.init.method==='GET').length,2);assert.ok(!JSON.stringify(snapshot).includes('fixture-claude-secret'));
   assert.equal(snapshot.attempts.length,1,'quota reads are not inference attempts');
+});
+const seedQuota=(gateway,utilization,resetsAt)=>gateway.quotas.ingestClaudeSdkUsage({rate_limits_available:true,
+  rate_limits:{five_hour:{utilization,resets_at:resetsAt,limit_window_seconds:300}}});
+
+test('quota telemetry alone never refuses: an exhausted final target is still attempted',async t=>{
+  const f=await fixture(t,{fallback:[{...rule,targets:['claude-opus-test']}],models:[{...model},
+    {id:'claude-sonnet-test',upstream:'claude-sonnet-test',provider:'anthropic',label:'claude',context:200000,tools:true,vision:true,efforts:[],source:'fixture',auth:'authenticated'},
+    {id:'claude-opus-test',upstream:'claude-opus-test',provider:'anthropic',label:'claude',context:200000,tools:true,vision:true,efforts:[],source:'fixture',auth:'authenticated'}]});
+  seedQuota(f.gateway,97,new Date(Date.now()+3600_000).toISOString());
+  const response=await f.send({model:'claude-sonnet-test'});
+  assert.equal(response.status,200);
+  assert.equal(f.requests.length,1,'the preempted primary is never contacted and the last target always runs');
+  assert.equal(f.requests[0].body.model,'claude-opus-test');
+});
+test('a fresh near-limit window routes straight to the fallback target before any primary request',async t=>{
+  const f=await fixture(t,{fallback:[rule]});
+  seedQuota(f.gateway,97,new Date(Date.now()+3600_000).toISOString());
+  const seen=f.gateway.events;
+  assert.equal((await f.send({model:'claude-sonnet-test'})).status,200);
+  assert.equal(f.requests.filter(r=>r.body.model.startsWith('claude-sonnet')).length,0);
+  const fallback=seen.find(e=>e.event==='fallback');
+  assert.equal(fallback.reason,'quota_near_limit');assert.equal(fallback.actual,'gpt-test');
+  assert.equal(f.gateway.state.routes.get('session-a/main').reason,'quota_near_limit');
+});
+test('unknown, moderate or reset quota windows keep the primary route',async t=>{
+  const f=await fixture(t,{fallback:[rule]});
+  for(const [utilization,resetsAt] of [[94,new Date(Date.now()+3600_000).toISOString()],[97,new Date(Date.now()-3600_000).toISOString()]]) {
+    seedQuota(f.gateway,utilization,resetsAt);
+    assert.equal((await f.send({model:'claude-sonnet-test'},{'x-claude-code-prompt-id':'p-'+utilization+resetsAt})).status,200);
+  }
+  assert.ok(f.requests.some(r=>r.body.model.startsWith('claude-sonnet')),'without exhaustion the primary still serves');
+  const reader=f.gateway.quotas;
+  seedQuota(f.gateway,97,new Date(Date.now()+3600_000).toISOString());
+  assert.equal(reader.preempt('anthropic',95,Date.now()+61_000),false,'stale telemetry never preempts');
+  assert.equal(reader.preempt('anthropic',95),true);
 });

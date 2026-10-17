@@ -7,6 +7,7 @@ or remote CI execution occurred.
 
 ## OpenCode UI adoption — 2026-10-17 (in progress)
 
+
 - Live chat session, Windows Terminal, `bun dist/tui/opencode.js` from a disposable
   untrusted folder: trust dialog → project trust recorded → prompt → `✓ Read` row →
   Markdown answer → `Ready`; one Ctrl+C exited and left a normal prompt. A defect found
@@ -19,6 +20,13 @@ or remote CI execution occurred.
   from the user's native configuration before any prompt), resize, wheel, resume and
   mid-stream interrupt. The assistant text appeared twice once in that rejected turn;
   unexplained, not yet investigated.
+
+- Visual polish (2026-10-17): fixture-rendered character frames inspected for home
+  (block logo, centered composer, footer), session (rails, tool icons, status bar with
+  scanner, `esc interrupt` and context meter), centered palette and permission dialog,
+  and composer suggestions. `npm test`: 160 passed, 5 skipped; `npm run test:tui`: 14
+  passed. Colors and the backdrop are not visible in character frames; live terminal
+  acceptance is still open.
 
 - Upstream pinned at `07bbd0fd…`; see `opencode-provenance.md`. Bun 1.4.3 on
   Windows runs the OpenTUI 0.6.6 renderer; OpenTUI requires Bun ≥1.3.14 or
@@ -36,6 +44,93 @@ or remote CI execution occurred.
 - Not verified: live tool approval/elicitation, resize, wheel, selection during
   streaming, resume, interruption, upstream message renderer parity, and the final
   `claudapter tui` entry from the packed install.
+
+
+## Recovery, usage panel, task display, zAI preset and quota pre-emption — 2026-10-17
+- The interrupted working tree (17 modified, 27 untracked files) was reconstructed:
+  controller-side task folding, agent transcripts, sessions/picker, diff and
+  permission views were complete; the session had stopped mid-wiring of
+  `opencode/app.tsx` (missing scroll ref, StatusBar segments and the task strip)
+  and mid-TDD (prompt-recall submit lacked an await; fuzzy ranking expectation
+  conflicted with an undocumented haystack-length tiebreak, which was removed in
+  favor of stable order). The Windows-invisible `test:tui` glob was replaced with
+  an explicit file list.
+- `npm run check`: TypeScript passes. `npm test`: **178 passed, 0 failed,
+  5 skipped**. `npm run test:tui`: **64 passed** (includes the new usage-panel,
+  task-strip and picker/recall tests). No live terminal session was run for the
+  new surfaces; frames are fixture renders.
+- `/usage` now opens a graphical panel (quota meter bars with warning/danger
+  colors, reset countdowns, request-token totals per actual model/agent, `r`
+  refresh, `end` scroll) instead of a JSON dump. Verified by a fixture-frame test
+  at 100×30 including the scrolled totals section.
+- Tasks display: `agentProgressSummaries` is enabled; a fixture App render shows
+  the workflow strip (`⛓ spec`), sub-agent row (`◉ Review code · reviewer`) above
+  the composer and the status chip `◉ 1 agent · ⛓ 1 workflow`. Controller folding
+  tests cover lifecycle, kinds, background level replace semantics and tool links.
+- Z.ai preset: `claudapter provider add zai` writes the documented
+  Anthropic-protocol endpoint and GLM-5.3/GLM-5.3-Flash capabilities (verified
+  against docs.z.ai on 2026-10-17); contract tests assert every preset passes
+  `validateConfig` and that merges reject duplicates/empty selections without
+  mutating config. No zAI key was configured and no zAI inference ran.
+- Quota pre-emption: gateway tests with simulated upstreams prove a fresh ≥95%
+  anthropic window routes directly to the fallback target with reason
+  `quota_near_limit` and zero primary contacts; moderate (94%), reset-past and
+  stale (>60s) windows keep the primary; a chain whose final target is exhausted
+  still attempts it (quota telemetry never refuses). No live near-limit switch
+  against a real account was performed.
+
+## Graphical views, settings hub, rc.3 — 2026-10-17 (second session)
+
+- Version bumped to 0.2.0-rc.3; tarball packed from the checkout and installed
+  globally with `--omit=optional` before the feature work. From `%TEMP%`,
+  `claudapter --version` returned 0.2.0-rc.3 and `claudapter providers` reported
+  the real account states. `claudapter provider add` correctly refuses
+  non-interactive terminals; the zAI wizard therefore remains to be run by the
+  user in an interactive shell. Reinstalled after the features below.
+- `/context` renders a graphical panel (catalog/engine capacity, active-window
+  meter, proportional stacked category bar, compaction-buffer and deferred rows,
+  memory-file and MCP-tool token breakdown). Verified by a fixture-frame test.
+- `/diff` renders a file-list browser over a new `unifiedDiff` parser; enter
+  reviews one file with the existing colored DiffView. Parser tests cover
+  multi-file patches, `/dev/null` deletion naming, `--- `/`+++` header immunity
+  and old/new hunk numbering.
+- `/settings` (`/setup`, `/fallback`) opens a defaults hub: default model,
+  per-model reasoning effort and structured fallback-rule editing through
+  prefilled option/number forms plus an explicit confirmation. The previous raw
+  JSON-textarea rule editor is gone. Decision forms gained an optional `initial`
+  prefill; the null prototype of the value map is retained (`__proto__` key test
+  still passes).
+- Config schema: `model` and `modelEffort` validate strictly; controller tests
+  cover setter round-trips (set/validate/reject/clear) through the isolated
+  `CLAUDAPTER_HOME`. Session-start application (`Options.model`, `Options.effort`)
+  and the model-switch effort reapplication are type-checked wiring, not yet
+  observed against a live engine.
+- Final suites after all changes: `npm run check` 0 errors; `npm test` **180
+  passed, 0 failed, 5 skipped**; `npm run test:tui` **70 passed**. No live
+  terminal session, real zAI inference or saved-config reload was performed.
+
+## Live ConPTY walkthrough and focus defect — 2026-10-17 (third session)
+
+- Computer Use could not be used for visual inspection (screenshots are not
+  readable by this model), so the real TUI was driven through the repository's
+  ConPTY harness (`test/terminal.py`, fixture homes, 160×42) and read back as
+  text. This is a real terminal run, not a fixture render.
+- Defect found only live: `/mcp`, `/status`, `/skills`, `/plugins` and other admin
+  inspectors showed raw JSON in a Cancel/Confirm decision dialog. Replaced by a
+  structured snapshot renderer (`snapshot-view.tsx`: sections, record lists with
+  status chips, wrapped descriptions, nested fields, no duplicate titles); task,
+  rewind, plan, remote-control, browser and shortcut data use it too.
+- Second defect found only live: panels without an input (usage, context, tasks,
+  settings, snapshot, diff) received no keys at all — Esc, arrows and even Ctrl+C
+  were dead — because the composer editor keeps claiming keyboard input unless
+  another input takes focus (menus work only because their search input does).
+  Fixture tests could not show this. Fix: a zero-width focus-sink input in the
+  shared `Dialog`, plus the composer reclaiming focus once it is enabled again.
+- Observed live after the fix: `/mcp` → Inspect (graphical, Esc closes),
+  `/usage`, `/context`, `/settings` (Enter opens the model menu), `/diff`,
+  Ctrl+T tasks panel, `/status` (SESSION section) and `/skills`, each reopening
+  correctly after the previous panel was closed. No inference was performed.
+- Not verified: sub-agent/workflow rows with a real turn, resize and mouse.
 
 ## Selection and Claude Code 2.1.302 — 2026-10-17
 

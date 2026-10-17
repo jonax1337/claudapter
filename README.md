@@ -5,7 +5,7 @@
 Claudapter launches your installed Claude Code with a temporary loopback model
 gateway. It adds account-catalog GPT models to the native `/model` picker,
 optional GPT-backed native agents, read-only discovery, and explicitly enabled
-provider fallback. Version **0.2.0-rc.2** adds an optional custom TUI,
+provider fallback. Version **0.2.0-rc.3** adds an optional custom TUI,
 actual-provider usage accounting and maximum catalog context configuration.
 Both interfaces run your installed Claude Code; there is no Rookery runtime
 dependency. The TUI uses React, Ink and the pinned Claude Agent SDK.
@@ -27,7 +27,7 @@ model gateway. The explicit flag changes only this session, not saved permission
 npm ci --omit=optional
 npm test
 npm pack
-npm install --global --omit=optional .\claudapter-0.2.0-rc.2.tgz
+npm install --global --omit=optional .\claudapter-0.2.0-rc.3.tgz
 claudapter setup
 claudapter doctor
 ```
@@ -203,6 +203,8 @@ directory). Project settings cannot enable Claudapter policies.
   "version": 1,
   "claude": true,
   "chatgpt": true,
+  "model": "glm-5.3",
+  "modelEffort": { "glm-5.3": "max" },
   "providers": [],
   "agents": {},
   "fallback": [
@@ -228,6 +230,13 @@ Enabling a cross-provider rule authorizes sending that scope's conversation,
 system instructions and tool schemas/results to each listed target. No other
 provider is automatically selected.
 
+The TUI's `/settings` (also `/setup`, `/fallback`) edits all of this without
+hand-written JSON: a default model for new sessions, a per-model reasoning effort
+(`low`–`max`, applied at session start and model switch), and fallback rules
+through a structured picker with an explicit confirmation before anything is
+saved. Both optional fields can be removed again; absent values keep the native
+Claude Code defaults.
+
 The gateway handles recognized 429 usage/rate rejections and selected 5xx
 availability rejections **before any response output**. Auth, billing, policy,
 invalid requests, refusals, transport failures and interrupted streams stop.
@@ -236,6 +245,12 @@ extends its cooldown. A successful fallback stays local to its conversation/agen
 until cooldown expiry or explicit model change/reset. State is in memory and
 resets on launcher restart/resume. Native fallback chains remain available when
 Claudapter rules are disabled; combining both owners is rejected.
+
+Enabled rules also pre-empt a provider whose fresh quota window reports at least
+95% usage: such a target is skipped before its request is sent, so a turn is not
+started on an almost-exhausted provider. Quota telemetry alone never refuses a
+request — the last target of a chain is always attempted — and unknown or stale
+quotas disable pre-emption for that provider.
 
 ```powershell
 claudapter fallback show
@@ -262,7 +277,15 @@ explicit models/capabilities and a dedicated environment variable containing its
 key. The key itself is never requested in an argument or written to config.
 Built-in account credential variables cannot be reused for another provider.
 Compatible providers receive only their own credentials; redirects are refused.
-Only the fixture provider path has been tested; no paid account was added.
+
+`claudapter provider add zai` applies the documented Z.ai preset: the
+Anthropic-protocol endpoint `https://api.z.ai/api/anthropic`, the key variable
+`ZAI_API_KEY`, and the documented GLM-5.3 (text-only) and GLM-5.3-Flash
+(multimodal) models with their 1M context. The wizard prints and confirms the
+model list before writing anything.
+
+Only the fixture provider path and the preset's documented values have been
+verified; no paid account was added.
 
 For ChatGPT-only mode set `"claude": false` and start with an explicit catalog
 GPT model. A local placeholder credential starts Claude Code without a Claude

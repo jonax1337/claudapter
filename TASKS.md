@@ -14,6 +14,30 @@ Evidence: `docs/verification.md`. Check items only after verification; record bl
 - [ ] Theme/Markdown fidelity, removal of superseded Ink code after parity, packed public `claudapter tui` entry verified.
 - [ ] Release candidate approval; the migration is not fully accepted.
 
+## Session recovery, usage graphics, tasks display, zAI and quota pre-emption
+- [x] Recover the interrupted migration: finish app wiring (StatusBar segments, TasksStrip, scroll ref), fix Windows test glob, finish prompt-recall and fuzzy-ranking TDD leftovers; 178 Node tests plus 64 OpenTUI tests green.
+- [x] Graphical `/usage` panel (meter bars, reset countdowns, per-model token accounting, r refresh) replacing the JSON dump, with fallback to the view dialog for reduced hosts.
+- [x] Native sub-agent and workflow display: task folding from `task_*`/`background_tasks_changed`, live strip above the composer, status chip, Ctrl+T tree panel with details, agent transcripts and stop; `agentProgressSummaries` enabled; inline agent frames retained.
+- [x] Z.ai provider preset `claudapter provider add zai` with the documented Anthropic-protocol endpoint and GLM-5.3 / GLM-5.3-Flash capabilities; preset contract and merge tests.
+- [x] Quota pre-emption: enabled fallback rules skip a target whose fresh quota window reports ≥95% usage before sending; last target always attempted; background read-only quota refresh bounded to once per minute; gateway regression tests for skip/no-skip/stale/final-target.
+- [ ] Live Windows Terminal acceptance of the usage panel, tasks strip/panel with a real workflow or sub-agent turn, zAI live inference and a real near-limit pre-emptive switch; packed artifact rebuild.
+
+## Graphical data views, settings hub and rc.3 install
+- [x] Packed and installed 0.2.0-rc.3 globally (outside-checkout tarball); `claudapter --version` and `providers` verified from the temp directory before the UI work, reinstalled with all features at the end.
+- [x] Graphical `/context`: model/catalog capacity, active-window meter, stacked category bar (used/buffer/deferred), memory and MCP token breakdown; fixture-frame test.
+- [x] Graphical `/diff`: unified-patch parser (per-file, deletion naming, hunk numbering, marker immunity) plus a file-list → per-file review browser using the existing DiffView; parser and render tests.
+- [x] `/settings` (also `/setup`, `/fallback`): defaults hub panel with default model, per-model reasoning effort and structured fallback-rule editing (create/edit/toggle/delete, prefilled option forms, explicit confirmation); replaced the raw JSON-textarea rule editor.
+- [x] Config extension `model` + `modelEffort` with strict validation; applied at session start (`Options.model`/`Options.effort`) and on model switch (`applyFlagSettings`); controller setters save through `validateConfig`/`saveConfig`.
+- [ ] Live acceptance of `/settings` flows with a real engine and saved-configuration reload; rc.3 packed artifact interactive run.
+
+## TUI visual polish (OpenCode look)
+- [x] Central theme palettes; all components themed; two-tone block-glyph logo and tagline; home footer with location and status.
+- [x] Centered 60/88-column dialogs over a dimmed backdrop for palette, menus, confirmations, forms and permission prompts.
+- [x] Composer: slash-command suggestions with descriptions, prompt history, permission-mode badge, model and provider.
+- [x] Status bar: scanner with elapsed time and `esc interrupt`, connection states, context meter; error toast.
+- [x] Fourteen UI tests plus existing suite (160 passed, 5 skipped); TypeScript checks. Fixture frames only.
+- [ ] Live Windows Terminal visual acceptance of colors, backdrop, scanner and esc-interrupt during a real turn.
+
 ## Selection and version compatibility fixes
 - [x] Visible transcript drag selection and Ctrl+C copy without removing wheel scrolling.
 - [x] Actual Windows Terminal drag/copy/paste-back verified; Unicode and streaming regression tests.

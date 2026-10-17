@@ -18,8 +18,14 @@ claudapter usage --json
 Developers also need Bun to build the UI bundle. Source attribution is in
 [OpenCode provenance](opencode-provenance.md).
 
-The new interface includes a responsive ASCII wordmark, searchable command palette,
-controller-backed dialogs and command actions. The historical details below describe
+The new interface includes a two-tone block-glyph logo, centered dialogs over a
+dimmed backdrop, a searchable command palette with descriptions, and controller-backed
+command actions. The composer offers slash-command suggestions (↑↓ select, tab
+complete, enter run, esc dismiss), prompt history on ↑/↓ from an empty prompt, and a
+permission-mode badge with model and provider. Below it, a status bar shows an
+animated scanner, elapsed time and `esc interrupt` during a turn, and context usage
+otherwise. Command errors appear as a dismissing toast. Themes: midnight, ocean,
+terminal and contrast (`/theme`). The historical details below describe
 the earlier Ink implementation and are not a blanket parity claim for the new UI.
 Frozen selection during streaming, styled Markdown fidelity, theme coverage and every
 administrative interaction still require full acceptance. The earlier Ink source
@@ -46,6 +52,11 @@ scrolling remains enabled, with no mode switch required.
 PageUp/PageDown and the mouse wheel scroll the transcript, usage and context
 panels. Browsing history stays anchored while new output arrives; End (with an
 empty composer) returns to live output and Home goes to the beginning.
+Ctrl+T or `/tasks` opens the agents & workflows tree: native sub-agents,
+workflows, shells and monitors with status, elapsed time, progress summaries,
+details, agent transcripts (t) and stopping (x). While they run, a live strip
+above the composer shows each task tree, and the status bar summarizes them
+("◉ 2 agents · ⛓ 1 workflow"); clicking that chip opens the panel.
 `/details` expands or collapses tool inputs/output; failed tools keep their
 error details visible. Assistant Markdown supports inline emphasis/code, lists,
 quotes, links and fenced blocks; tables use labelled rows on narrow terminals.
@@ -66,15 +77,15 @@ Claudapter shortcuts. `/favorite` stars models. These preferences live only in
 | Surface | Behavior |
 | --- | --- |
 | `/model`, `/effort`, `/output-style` | Session selection, account catalog refresh and preserved native policy |
-| `/usage`, `/context` | Separate account quotas, routed request tokens and effective engine capacity |
-| `/agents`, `/tasks` | Explicit native delegation, follow-up, task output and stopping |
+| `/usage`, `/context` | Graphical quota and context panels: meter bars, reset countdowns, routed request tokens, context categories, memory/MCP breakdown |
+| `/agents`, `/tasks` | Explicit native delegation, follow-up, agents & workflows tree with transcripts and stopping |
 | `/resume`, `/clear`, `/fork`, `/rename`, `/history` | Native saved sessions and composer recall |
 | `/rewind` | Native file preview/restore and conversation branching; original session retained |
 | `/export`, `/copy` | Native transcript export to a new file; last assistant answer to clipboard |
 | `/attach`, `/attachments` | Explicit image/text attachments and removal before sending |
-| `/diff`, `/add-dir` | Safe Git review; confirmed session-only additional file access |
+| `/diff`, `/add-dir` | Graphical workspace diff browser (file list, per-file review, untracked) and confirmed session-only additional file access |
 | `/plan` | View native plan; enter/leave plan mode without auto-accepting tool permissions |
-| `/fallback` | Inspect, edit/confirm allowlisted rules and reset the current main cooldown |
+| `/settings`, `/setup`, `/fallback` | Defaults hub: default model, per-model reasoning effort and structured fallback-rule editing (create/edit/toggle/delete) with explicit confirmation |
 | `/config`, `/permissions` | Session overlays and explicitly scoped native rule editing |
 | `/mcp`, `/plugins`, `/skills` | Status, lifecycle, native configuration and OAuth forms |
 | `/hooks`, `/memory` | Native discovery and scoped edits; Markdown edits preserve a recovery backup |

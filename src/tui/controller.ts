@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { readFile,writeFile,mkdir } from 'node:fs/promises';
 import { join,resolve,extname } from 'node:path';
-import { query,listSessions,getSessionMessages,renameSession,forkSession,deleteSession, type Query,type Options,type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query,listSessions,getSessionInfo,getSessionMessages,getSubagentMessages,renameSession,forkSession,deleteSession, type Query,type Options,type SDKUserMessage,type SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import { prepareSession,installedClaudePath,type PreparedSession } from '../launcher.js';
 import { nativeContextSettings,type Model } from '../models.js';
 import { validateConfig,saveConfig,configHome,type Config } from '../config.js';
@@ -13,16 +13,25 @@ import { trustDirectory,isWorkspaceTrusted,isHomeDirectory } from './trust.js';
 import { assertCompatVersion,launchWorkspaceTrust,invokeCompat } from './compat.js';
 import { TOKEN_HEADER } from '../gateway.js';
 import type { TranscriptEntry } from './panels.js';
+import { applyTaskMessage,applyBackgroundTasks,type TaskView } from './task-model.js';
+import { StreamTrace } from './stream-trace.js';
+import { contentBlockEntry,historyEntries,isMetaMessage,promptText,sanitizeEntry,toolResultEntry,toolStartEntry } from './transcript-model.js';
 import type { UsageSnapshot } from '../usage.js';
 
 export interface FormField {key:string;label:string;type?:'text'|'number'|'boolean'|'json';required?:boolean;options?:string[];multi?:boolean;secret?:boolean}
+export type { TaskKind,TaskStatus,TaskView } from './task-model.js';
+export type UserPermissionMode='default'|'acceptEdits'|'plan';
+/** Modes the user can switch to from the TUI. None of them skips permission prompts. */
+const PERMISSION_CYCLE:readonly UserPermissionMode[]=['default','acceptEdits','plan'];
+const SESSION_TITLE_LIMIT=80;
+const AGENT_TRANSCRIPT_TAIL=400;
 export interface PendingDialog {
   id:string;title:string;description:string;fields:FormField[];
   choices:{label:string;value:unknown}[];defaultIndex:number;
 }
 export interface TuiState {
   ready:boolean;busy:boolean;sessionId:string;model:string;permissionMode:string;status:string;
-  entries:TranscriptEntry[];models:Model[];commands:any[];agents:any[];tasks:Record<string,any>;
+  entries:TranscriptEntry[];models:Model[];commands:any[];agents:any[];tasks:Record<string,TaskView>;sessionTitle?:string;
   hookActivity:{id:string;name:string;outcome:string}[];
   context:any;usage?:UsageSnapshot;pending:PendingDialog[];lastRoute?:{requested:string;actual:string;provider:string};
 }
@@ -38,6 +47,7 @@ export class TuiController extends EventEmitter {
   readonly state:TuiState={ready:false,busy:false,sessionId:'',model:'default',permissionMode:'default',status:'Starting Claude Code…',entries:[],models:[],commands:[],agents:[],tasks:{},hookActivity:[],context:null,pending:[]};
   session?:PreparedSession;query?:Query;claudePath='claude';
   private input=new InputQueue();private closing=false;private generation=0;private streamIds=new Map<string,string>();
+  private trace=new StreamTrace();private thinking:{entryId?:string;pendingTokens?:number}={};
   private decisions=new Map<string,{promise:Promise<any>;resolve:(value:any)=>void;cancel:unknown}>();
   private timer?:ReturnType<typeof setInterval>;private initialPromptConsumed=false;private trustQuery?:Query;private homeTrustAccepted=false;
   readonly cwd=process.cwd();
@@ -45,7 +55,16 @@ export class TuiController extends EventEmitter {
   subscribe=(listener:()=>void)=>{this.on('change',listener);return()=>{this.off('change',listener);};};
   changed(){this.revision++;this.emit('change');}
   notice(text:string,error=false){this.upsert({id:randomUUID(),kind:error?'error':'notice',text:safeText(text)});}
-  private upsert(entry:TranscriptEntry){entry={...entry,text:safeText(entry.text),...(entry.details!==undefined?{details:safeText(entry.details)}:{})};const i=this.state.entries.findIndex(e=>e.id===entry.id);if(i<0)this.state.entries.push(entry);else this.state.entries[i]={...this.state.entries[i],...entry};if(this.state.entries.length>3000)this.state.entries.splice(0,this.state.entries.length-3000);this.changed();}
+  private upsert(entry:TranscriptEntry){
+    entry=sanitizeEntry(entry);
+    const i=this.state.entries.findIndex(e=>e.id===entry.id);
+    if(i<0)this.state.entries.push(entry);else this.state.entries[i]={...this.state.entries[i],...entry};
+    if(this.state.entries.length>3000)this.state.entries.splice(0,this.state.entries.length-3000);
+    this.changed();
+  }
+  private entry(id:string){return this.state.entries.find(e=>e.id===id);}
+  private patchEntry(id:string,patch:Partial<TranscriptEntry>){const i=this.state.entries.findIndex(e=>e.id===id);if(i>=0){this.state.entries[i]={...this.state.entries[i],...patch};this.changed();}}
+  private resetTranscript(){this.state.entries=[];this.state.tasks={};this.trace.reset();this.thinking={};}
   private updateUsage(){if(this.session)this.state.usage=this.session.gateway.manifest().usage;this.changed();}
 
   async start(resume?:string,fresh=false){
@@ -67,7 +86,7 @@ export class TuiController extends EventEmitter {
       settingSources:parsed.options.settingSources??['user','project','local'],
       plugins:[...(parsed.options.plugins??[]),{type:'local',path:this.session.plugin}],
       includePartialMessages:true,forwardSubagentText:true,includeHookEvents:true,enableFileCheckpointing:true,
-      perTaskStopAffordance:true,
+      perTaskStopAffordance:true,agentProgressSummaries:true,
       canUseTool:(name,input,meta)=>this.permission(name,input,meta),
       onElicitation:(request,meta)=>this.elicitation(request,meta),
       supportedDialogKinds:nativeDialogKinds,
@@ -79,7 +98,8 @@ export class TuiController extends EventEmitter {
       stderr:chunk=>{const text=safeText(chunk).trim();if(text&&!text.includes('unrecognized_model'))this.notice(text.slice(0,2000));}
     };
     if(fresh||resume){delete options.resume;delete options.continue;delete options.sessionId;delete options.forkSession;delete options.resumeSessionAt;delete options.resumeDropsTurn;}
-    if(fresh)options.model=this.state.model==='default'?undefined:this.state.model;
+    if(fresh){options.model=this.config.model??(this.state.model==='default'?undefined:this.state.model);
+      if(options.model){const effort=this.config.modelEffort?.[options.model];if(effort)options.effort=effort as 'low'|'medium'|'high'|'xhigh'|'max';}}
     if(resume)options.resume=resume;
     if(options.continue&&!options.resume){const sessions=await listSessions({dir:this.cwd,limit:1});if(sessions[0]){options.resume=sessions[0].sessionId;delete options.continue;}}
     this.state.model=options.model??'default';
@@ -127,72 +147,112 @@ export class TuiController extends EventEmitter {
   receive(message:any){
     if(message.session_id)this.state.sessionId=message.session_id;
     const parent=message.parent_tool_use_id??'main';
-    if(message.type==='stream_event'){
-      const event=message.event;
-      if(event.type==='message_start')this.streamIds.set(parent,event.message.id);
-      const id=this.streamIds.get(parent)??'stream';const key='block:'+id+':'+event.index;
-      if(event.type==='content_block_start'){
-        const block=event.content_block;
-        this.upsert({id:block.type==='tool_use'?'tool:'+block.id:key,kind:block.type==='thinking'?'thinking':block.type==='tool_use'?'tool':'assistant',text:block.text??block.thinking??'',toolName:block.name,status:block.type==='tool_use'?'running':undefined,agent:parent==='main'?undefined:parent,details:block.type==='tool_use'?JSON.stringify(block.input,null,2):undefined});
-      }
-      if(event.type==='content_block_delta'){
-        const delta=event.delta;const entry=this.state.entries.find(e=>e.id===key);
-        if(entry){entry.text+=safeText(delta.text??delta.thinking??'');this.changed();}
-      }
-      return;
-    }
-    if(message.type==='assistant'){
-      for(const [i,block] of (message.message?.content??[]).entries()){
-        if(block.type==='tool_use'){
-          const previous=this.state.entries.find(e=>e.id==='tool:'+block.id);
-          this.upsert({id:'tool:'+block.id,kind:'tool',text:block.name,toolName:block.name,details:previous?.status==='done'||previous?.status==='error'?previous.details:safeText(JSON.stringify(block.input,null,2)),status:previous?.status??'running',agent:parent==='main'?undefined:parent});
-        }
-        else if(block.type==='text'||block.type==='thinking')this.upsert({id:'block:'+message.message.id+':'+i,kind:block.type==='thinking'?'thinking':'assistant',text:safeText(block.text??block.thinking??''),agent:parent==='main'?undefined:parent});
-      }
-    }else if(message.type==='user'){
-      const content=message.message?.content;
-      const userText=typeof content==='string'?content:Array.isArray(content)?content.filter((b:any)=>b.type==='text').map((b:any)=>b.text).join('\n'):'';
-      if(userText)this.upsert({id:message.uuid??message.message?.id??randomUUID(),kind:'user',text:userText});
-      for(const block of Array.isArray(message.message?.content)?message.message.content:[]){
-        if(block.type==='tool_result'){
-          const existing=this.state.entries.find(e=>e.id==='tool:'+block.tool_use_id);
-          const result=typeof block.content==='string'?block.content:JSON.stringify(block.content,null,2);
-          if(existing?.status==='done'||existing?.status==='error')continue;
-          this.upsert({id:'tool:'+block.tool_use_id,kind:'tool',text:existing?.toolName??'Tool result',toolName:existing?.toolName,status:block.is_error?'error':'done',details:(existing?.details??'')+'\n\n'+safeText(result??'').slice(0,16000),agent:existing?.agent});
-        }
-      }
-    }else if(message.type==='result'){
+    if(message.type==='stream_event')return this.receiveStream(message.event,parent);
+    if(message.type==='assistant')this.receiveAssistant(message,parent);
+    else if(message.type==='user')this.receiveUser(message);
+    else if(message.type==='result'){
       this.state.busy=false;this.state.status=message.is_error?'Turn failed':'Ready';
       if(message.is_error)this.notice(message.result??(message.errors??[]).join('\n')??'Turn failed.',true);
       void this.refreshContext().catch(()=>{});this.updateUsage();
-    }else if(message.type==='system'){
-      if(message.subtype==='init'){this.state.model=message.model??this.state.model;this.state.permissionMode=message.permissionMode??this.state.permissionMode;}
-      if(message.subtype==='commands_changed'&&Array.isArray(message.commands))this.state.commands=message.commands;
-      if(message.subtype==='hook_started'||message.subtype==='hook_response'){
-        const id=message.hook_id??message.uuid??randomUUID();
-        const activity={id,name:safeText(message.hook_name??message.hook_event??'Hook'),outcome:safeText(message.subtype==='hook_started'?'running':message.outcome??'completed')};
-        const previous=this.state.hookActivity.findIndex(hook=>hook.id===id);
-        if(previous<0)this.state.hookActivity.push(activity);else this.state.hookActivity[previous]=activity;
-        if(this.state.hookActivity.length>100)this.state.hookActivity.splice(0,this.state.hookActivity.length-100);
-        if(['error','failed','failure','blocked','cancelled'].includes(activity.outcome)||message.exit_code>0)
-          this.upsert({id:'hook-error:'+id,kind:'error',text:'Hook '+activity.name+': '+activity.outcome+((message.stderr||message.output)?'\n'+safeText(message.stderr||message.output).slice(0,2000):'')});
-      }
-      if(message.subtype?.startsWith('task_')||message.subtype==='background_tasks_changed'){
-        if(message.task_id)this.state.tasks[message.task_id]={...this.state.tasks[message.task_id],...message};
-        if(message.tasks)for(const task of message.tasks)this.state.tasks[task.task_id??task.id]=task;
-      }
-      if(message.subtype==='informational'&&(message.level==='warning'||message.level==='suggestion'||message.halt))this.notice(message.content??'Engine warning',Boolean(message.halt));
-      if(message.subtype==='local_command_output')this.notice(message.content??message.output??JSON.stringify(message));
-      if(['notification','compact_boundary','permission_denied','api_retry','model_refusal_fallback'].includes(message.subtype))this.notice(message.message??message.content??message.description??message.subtype,message.subtype==='permission_denied');
-      if(message.subtype==='conversation_reset'){this.state.entries=[];this.state.tasks={};}
-    }
+    }else if(message.type==='system')this.receiveSystem(message);
     this.changed();
+  }
+
+  private receiveStream(event:any,parent:string){
+    if(event.type==='message_start')this.streamIds.set(parent,event.message.id);
+    const messageId=this.streamIds.get(parent)??'stream';const key='block:'+messageId+':'+event.index;
+    const agent=parent==='main'?undefined:parent;
+    if(event.type==='content_block_start')this.startStreamBlock(messageId,key,event.content_block,agent);
+    else if(event.type==='content_block_delta'){
+      const entry=this.entry(key);
+      if(entry){entry.text+=safeText(event.delta.text??event.delta.thinking??'');this.changed();}
+    }
+    else if(event.type==='content_block_stop')this.stopStreamBlock(key);
+    else if(event.type==='message_stop')this.thinking.entryId=undefined;
+  }
+  private startStreamBlock(messageId:string,key:string,block:any,agent:string|undefined){
+    if(block.type==='tool_use'){this.upsertTool(block,agent);return;}
+    const entry=contentBlockEntry(key,block,agent,true);if(!entry)return;
+    this.trace.streamedBlock(messageId,key);
+    if(entry.kind==='thinking'){entry.thinkingTokens=this.thinking.pendingTokens;this.thinking={entryId:key};}
+    this.upsert(entry);
+  }
+  private stopStreamBlock(key:string){
+    if(this.thinking.entryId!==key)return;
+    this.thinking.entryId=undefined;
+    if(!this.entry(key)?.text)this.patchEntry(key,{redacted:true});
+  }
+  /** Thinking progress arrives as a token estimate while the model hides the thinking text. */
+  private updateThinkingTokens(tokens:unknown){
+    if(typeof tokens!=='number'||!Number.isFinite(tokens))return;
+    const id=this.thinking.entryId;
+    if(!id){this.thinking.pendingTokens=tokens;return;}
+    this.patchEntry(id,{thinkingTokens:tokens,...(this.entry(id)?.text?{}:{redacted:true})});
+  }
+
+  private receiveAssistant(message:any,parent:string){
+    const agent=parent==='main'?undefined:parent;
+    for(const [index,block] of (message.message?.content??[]).entries()){
+      if(block.type==='tool_use')this.upsertTool(block,agent);
+      else{
+        const kind=block.type==='text'?'assistant':'thinking';
+        const entry=contentBlockEntry(this.trace.finalBlockId(message,index,kind,id=>this.entry(id)?.kind),block,agent);
+        if(entry)this.upsert(entry);
+      }
+    }
+  }
+  private upsertTool(block:any,agent:string|undefined){
+    const previous=this.entry('tool:'+block.id);const finished=previous?.status==='done'||previous?.status==='error';
+    const start=toolStartEntry(block,agent);
+    this.trace.toolStarted(block.id);
+    this.upsert({...start,status:previous?.status??'running',details:finished?previous.details:start.details,taskId:this.taskOfTool(block.id)});
+  }
+  private taskOfTool(toolUseId:string){return Object.values(this.state.tasks).find(task=>task.toolUseId===toolUseId)?.id;}
+
+  private receiveUser(message:any){
+    const content=message.message?.content;
+    const text=isMetaMessage(message)?'':promptText(content);
+    if(text)this.upsert({id:message.uuid??message.message?.id??randomUUID(),kind:'user',text});
+    const results=(Array.isArray(content)?content:[]).filter((block:any)=>block.type==='tool_result');
+    for(const block of results){
+      const existing=this.entry('tool:'+block.tool_use_id);
+      if(existing?.status==='done'||existing?.status==='error')continue;
+      this.trace.rememberAgent(block.tool_use_id,message.tool_use_result?.agentId);
+      this.upsert(toolResultEntry(block,{existing,elapsedMs:this.trace.toolElapsedMs(block.tool_use_id),result:results.length===1?message.tool_use_result:undefined}));
+    }
+  }
+
+  private receiveSystem(message:any){
+    if(message.subtype==='init'){this.state.model=message.model??this.state.model;this.state.permissionMode=message.permissionMode??this.state.permissionMode;}
+    if(message.subtype==='commands_changed'&&Array.isArray(message.commands))this.state.commands=message.commands;
+    if(message.subtype==='thinking_tokens')this.updateThinkingTokens(message.estimated_tokens);
+    if(message.subtype==='hook_started'||message.subtype==='hook_response')this.receiveHook(message);
+    if(message.subtype?.startsWith('task_')){applyTaskMessage(this.state.tasks,message);this.linkTaskToTool(this.state.tasks[message.task_id]);}
+    if(message.subtype==='background_tasks_changed'&&Array.isArray(message.tasks))applyBackgroundTasks(this.state.tasks,message.tasks);
+    if(message.subtype==='informational'&&(message.level==='warning'||message.level==='suggestion'||message.halt))this.notice(message.content??'Engine warning',Boolean(message.halt));
+    if(message.subtype==='local_command_output')this.notice(message.content??message.output??JSON.stringify(message));
+    if(['notification','compact_boundary','permission_denied','api_retry','model_refusal_fallback'].includes(message.subtype))this.notice(message.message??message.content??message.description??message.subtype,message.subtype==='permission_denied');
+    if(message.subtype==='conversation_reset')this.resetTranscript();
+  }
+  private receiveHook(message:any){
+    const id=message.hook_id??message.uuid??randomUUID();
+    const activity={id,name:safeText(message.hook_name??message.hook_event??'Hook'),outcome:safeText(message.subtype==='hook_started'?'running':message.outcome??'completed')};
+    const previous=this.state.hookActivity.findIndex(hook=>hook.id===id);
+    if(previous<0)this.state.hookActivity.push(activity);else this.state.hookActivity[previous]=activity;
+    if(this.state.hookActivity.length>100)this.state.hookActivity.splice(0,this.state.hookActivity.length-100);
+    if(['error','failed','failure','blocked','cancelled'].includes(activity.outcome)||message.exit_code>0)
+      this.upsert({id:'hook-error:'+id,kind:'error',text:'Hook '+activity.name+': '+activity.outcome+((message.stderr||message.output)?'\n'+safeText(message.stderr||message.output).slice(0,2000):'')});
+  }
+  private linkTaskToTool(task:TaskView|undefined){
+    const tool=task?.toolUseId?this.entry('tool:'+task.toolUseId):undefined;
+    if(tool&&tool.taskId!==task!.id)this.patchEntry(tool.id,{taskId:task!.id});
   }
 
   send(text:string,attachments:any[]=[]){
     if(!this.state.ready||!this.query)throw new Error('Claude Code is still starting.');
     if(!text.trim()&&!attachments.length)return;
     const uuid=randomUUID();this.upsert({id:uuid,kind:'user',text:text+(attachments.length?'\n['+attachments.length+' attachment(s)]':'')});
+    this.state.sessionTitle??=safeText(text).trim().replace(/\s+/g,' ').slice(0,SESSION_TITLE_LIMIT)||undefined;
     this.state.busy=true;this.state.status='Working';
     this.input.push({type:'user',uuid,session_id:this.state.sessionId,parent_tool_use_id:null,message:{role:'user',content:attachments.length?[{type:'text',text},...attachments]:text}});this.changed();
   }
@@ -202,7 +262,9 @@ export class TuiController extends EventEmitter {
     return mime[ext]?{type:'image',source:{type:'base64',media_type:mime[ext],data:data.toString('base64')}}:{type:'text',text:'Attached file '+full+':\n'+data.toString('utf8')};
   }
   async interrupt(){await this.query?.interrupt();this.state.busy=false;this.state.status='Interrupted';this.notice('Turn interrupted. Tools already completed are not undone.');}
-  async setModel(id:string){if(this.state.busy)throw new Error('Wait for the turn or interrupt before switching models.');await this.query!.setModel(id);this.state.model=id;await this.refreshContext();this.notice('Model selected for this session: '+id);}
+  async setModel(id:string){if(this.state.busy)throw new Error('Wait for the turn or interrupt before switching models.');await this.query!.setModel(id);this.state.model=id;await this.refreshContext();
+    const effort=this.config.modelEffort?.[id];if(effort)await this.query!.applyFlagSettings({effortLevel:effort as 'low'|'medium'|'high'|'xhigh'|'max'});
+    this.notice('Model selected for this session: '+id+(effort?' · effort '+effort:''));}
   async refreshContext(){const q=this.query;if(!q)return;const context=await q.getContextUsage({detail:'summary'});if(q!==this.query)return;this.state.context=context;this.changed();}
   async refreshModels(){
     if(this.state.busy)throw new Error('Refresh model bindings between turns.');if(!this.session||!this.query)return;
@@ -220,10 +282,11 @@ export class TuiController extends EventEmitter {
     if(this.query){try{this.session.gateway.quotas.ingestClaudeSdkUsage(await this.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({skipBehaviors:true}));}catch{this.session.gateway.quotas.ingestClaudeSdkUsage(null);}}
     await this.session.gateway.quotas.refresh();this.updateUsage();
   }
-  async sessions(){return listSessions({dir:this.cwd,limit:100});}
-  async resume(id:string){await this.stopEngine();this.state.entries=[];this.state.tasks={};await this.start(id);}
-  async newSession(){await this.stopEngine();this.state.entries=[];this.state.sessionId='';this.state.tasks={};await this.start(undefined,true);}
-  async rename(title:string){if(!this.state.sessionId)throw new Error('Send a message first.');await renameSession(this.state.sessionId,title,{dir:this.cwd});this.notice('Session renamed: '+title);}
+  /** Saved sessions of this directory with the full SDK metadata (title, branch, first prompt, size, tag). */
+  async sessions():Promise<SDKSessionInfo[]>{return listSessions({dir:this.cwd,limit:100});}
+  async resume(id:string){await this.stopEngine();this.resetTranscript();this.state.sessionTitle=undefined;await this.start(id);}
+  async newSession(){await this.stopEngine();this.resetTranscript();this.state.sessionId='';this.state.sessionTitle=undefined;await this.start(undefined,true);}
+  async rename(title:string){if(!this.state.sessionId)throw new Error('Send a message first.');await renameSession(this.state.sessionId,title,{dir:this.cwd});this.state.sessionTitle=safeText(title);this.notice('Session renamed: '+title);}
   async fork(){if(!this.state.sessionId)throw new Error('Send a message first.');const result=await forkSession(this.state.sessionId,{dir:this.cwd});await this.resume(result.sessionId);}
   async removeSession(id:string){if(id===this.state.sessionId)throw new Error('Close the current session before deleting it.');await deleteSession(id,{dir:this.cwd});}
   async stopTask(id:string){await this.query!.stopTask(id);this.notice('Stop requested for '+id);}
@@ -238,10 +301,60 @@ export class TuiController extends EventEmitter {
     for(const rule of candidate.fallback.filter(r=>r.enabled)){this.session!.registry.resolve(rule.from);for(const id of rule.targets)this.session!.registry.resolve(id);}
     await saveConfig(candidate);this.config.fallback.splice(0,this.config.fallback.length,...candidate.fallback);this.notice('Fallback rules saved and applied to this launcher.');this.changed();
   }
+  async updateDefaultModel(model:string|undefined){
+    if(model&&this.session)this.session.registry.resolve(model);
+    const candidate=validateConfig(model?{...this.config,model}:{...this.config,model:undefined});
+    await saveConfig(candidate);this.config.model=candidate.model;
+    if(model&&this.query)await this.setModel(model);
+    else this.notice(model?'Default model saved; it applies to new sessions.':'Default model cleared; new sessions use the native default.');
+    this.changed();
+  }
+  async updateModelEffort(model:string,effort:string|undefined){
+    const modelEffort={...this.config.modelEffort};
+    if(effort)modelEffort[model]=effort;else delete modelEffort[model];
+    const candidate=validateConfig({...this.config,modelEffort:Object.keys(modelEffort).length?modelEffort:undefined});
+    await saveConfig(candidate);this.config.modelEffort=candidate.modelEffort;
+    if(effort&&this.state.model===model)await this.query?.applyFlagSettings({effortLevel:effort as 'low'|'medium'|'high'|'xhigh'|'max'});
+    this.notice(effort?'Default effort for '+model+': '+effort:'Default effort for '+model+' cleared.');this.changed();
+  }
+  /** Rebuild the transcript of a saved session: its newest entries only, with tool calls closed. */
   async restore(id:string){
-    const messages=await getSessionMessages(id,{dir:this.cwd,limit:200});
-    for(const message of messages as any[])this.receive({type:message.type,message:message.message,uuid:message.uuid,parent_tool_use_id:message.parent_tool_use_id,session_id:id});
+    const history=historyEntries(await getSessionMessages(id,{dir:this.cwd}) as any[]);
+    this.state.entries=history.entries.map(sanitizeEntry);
+    this.state.sessionTitle=await this.savedSessionTitle(id);
     this.notice('Resumed '+id+'. Existing native history retained.');
+  }
+  private async savedSessionTitle(id:string){
+    const info=await getSessionInfo(id,{dir:this.cwd}).catch(()=>undefined);
+    const title=info?.customTitle||info?.summary||info?.firstPrompt;
+    return title?safeText(title).trim().replace(/\s+/g,' ').slice(0,SESSION_TITLE_LIMIT):undefined;
+  }
+  /**
+   * Messages of a sub-agent as transcript entries. A local_agent task id is the agent id that names the
+   * transcript file (agent-<id>.jsonl); the Agent tool result also reports an `agentId`, tried second.
+   * Tasks without a transcript of their own (shells, monitors, workflow members) yield [].
+   */
+  async agentTranscript(taskId:string):Promise<TranscriptEntry[]>{
+    if(!this.state.sessionId)return [];
+    const reported=this.trace.agentOf(this.state.tasks[taskId]?.toolUseId);
+    for(const agentId of new Set([taskId,reported])){
+      if(!agentId)continue;
+      const messages=await getSubagentMessages(this.state.sessionId,agentId,{dir:this.cwd}).catch(()=>[]);
+      if(messages.length)return historyEntries(messages as any[],AGENT_TRANSCRIPT_TAIL).entries.map(sanitizeEntry);
+    }
+    return [];
+  }
+
+  async setPermissionMode(mode:UserPermissionMode){
+    if(!PERMISSION_CYCLE.includes(mode))throw new Error('Permission mode cannot be selected here: '+mode);
+    if(!this.query)throw new Error('Claude Code is still starting.');
+    await this.query.setPermissionMode(mode);this.state.permissionMode=mode;this.changed();
+  }
+  /** default → acceptEdits → plan → default. Any other current mode returns to default. */
+  async cyclePermissionMode(){
+    const current=PERMISSION_CYCLE.indexOf(this.state.permissionMode as UserPermissionMode);
+    const next=PERMISSION_CYCLE[(current+1)%PERMISSION_CYCLE.length];
+    await this.setPermissionMode(next);return next;
   }
 
   ask(dialog:PendingDialog,signal:AbortSignal|undefined,cancel:unknown):Promise<any>{
