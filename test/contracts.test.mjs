@@ -39,15 +39,15 @@ test('catalog carries freshness, does not advertise hidden rows or claim live ve
 });
 test('cooldown expires, explicit selection resets route, new prompts release interrupted turn',()=>{
   const state=new FallbackState([rule]);const main={session:'s',requestClass:'main',prompt:'p'};
-  state.set(main,'a','b',1000,'rate_limit');assert.equal(state.route(main,'a'),'b');assert.equal(state.route(main,'a',Date.now()+2000),'a');
-  state.set(main,'a','b',1000,'rate_limit');assert.equal(state.route(main,'c'),'c');assert.equal(state.routes.size,0);
+  state.set(main,{requested:'a',actual:'b',provider:'fixture',cooldownMs:1000,reason:'rate_limit'});assert.equal(state.route(main,'a'),'b');assert.equal(state.route(main,'a',Date.now()+2000),'a');
+  state.set(main,{requested:'a',actual:'b',provider:'fixture',cooldownMs:1000,reason:'rate_limit'});assert.equal(state.route(main,'c'),'c');assert.equal(state.routes.size,0);
   state.block(main);assert.equal(state.isBlocked(main),true);assert.equal(state.isBlocked({...main,prompt:'new'}),false);
 });
 test('revoked fallback authorization immediately releases cooldown but keeps the replay guard',()=>{
   const rules=[structuredClone(rule)],state=new FallbackState(rules),main={session:'s',requestClass:'main',prompt:'p'};
-  state.set(main,'a','b',10000,'rate_limit');state.block(main);rules[0].enabled=false;
+  state.set(main,{requested:'a',actual:'b',provider:'fixture',cooldownMs:10000,reason:'rate_limit'});state.block(main);rules[0].enabled=false;
   assert.equal(state.route(main,'a'),'a');assert.equal(state.isBlocked(main),true);
-  rules[0].enabled=true;state.set(main,'a','b',10000,'rate_limit');rules[0].targets=['c'];
+  rules[0].enabled=true;state.set(main,{requested:'a',actual:'b',provider:'fixture',cooldownMs:10000,reason:'rate_limit'});rules[0].targets=['c'];
   assert.equal(state.route(main,'a'),'a');assert.equal(state.isBlocked(main),true);
 });
 test('classification excludes billing and respects Retry-After, context bounds never truncate',()=>{

@@ -1,18 +1,31 @@
 import type { FallbackRule } from './config.js';
 import type { Model } from './models.js';
+import { RouteNoticeBus, switchReason, type RecoveryCause, type RouteScope } from './route-events.js';
 
 export interface Identity { session?: string; agent?: string; requestClass?: string; prompt?: string }
-export interface RouteState { requested: string; actual: string; until: number; reason: string }
+/** `reason` keeps the gateway's internal label; route notices translate it with `switchReason`. */
+export interface RouteState { requested: string; actual: string; provider: string; until: number; reason: string }
+export interface RouteSwitch { requested: string; actual: string; provider: string; cooldownMs: number; reason: string; retryAfterMs?: number }
+
+const MAIN_SCOPE = 'main';
+
+function scopeOf(key: string): RouteScope {
+  const separator = key.indexOf('/');
+  const agent = key.slice(separator + 1);
+  return { session: key.slice(0, separator), ...(agent === MAIN_SCOPE ? {} : { agent }) };
+}
+
 export class FallbackState {
   readonly agents = new Map<string,string>();
   readonly routes = new Map<string,RouteState>();
   readonly interrupted = new Map<string,{prompt?:string;reason:string}>();
+  readonly notices = new RouteNoticeBus();
   constructor(readonly rules: FallbackRule[]) {}
-  key(i: Identity): string | undefined { return i.session ? i.session + '/' + (i.agent ?? 'main') : undefined; }
+  key(i: Identity): string | undefined { return i.session ? i.session + '/' + (i.agent ?? MAIN_SCOPE) : undefined; }
   register(session: string, agent: string, name: string) { this.agents.set(session+'/'+agent,name.replace(/^claudapter:/,'')); }
   rule(i: Identity, model: string): FallbackRule | undefined {
     if (!i.session || !['main','subagent'].includes(i.requestClass ?? '')) return;
-    const scope = i.agent ? this.agents.get(this.key(i)!) : 'main';
+    const scope = i.agent ? this.agents.get(this.key(i)!) : MAIN_SCOPE;
     if (!scope || (i.requestClass==='subagent' && !i.agent)) return;
     return this.rules.find(r=>r.enabled && r.from===model && r.scopes.includes(scope));
   }
@@ -21,11 +34,30 @@ export class FallbackState {
     const state = this.routes.get(key);
     if (!state) return requested;
     const rule=this.rule(i,requested);
-    if (!rule || !rule.targets.includes(state.actual) || state.requested!==requested || state.until<=now) { this.routes.delete(key); return requested; }
+    if (state.until<=now) { this.recover(key,'cooldown_ended',now); return requested; }
+    if (!rule || !rule.targets.includes(state.actual) || state.requested!==requested) { this.recover(key,'superseded',now); return requested; }
     return state.actual;
   }
-  set(i: Identity, requested: string, actual: string, cooldown: number, reason: string) {
-    const key = this.key(i); if (key) this.routes.set(key,{requested,actual,until:Date.now()+cooldown,reason});
+  set(i: Identity, change: RouteSwitch, now = Date.now()) {
+    const key = this.key(i); if (!key) return;
+    const until = now + change.cooldownMs;
+    this.routes.set(key,{requested:change.requested,actual:change.actual,provider:change.provider,until,reason:change.reason});
+    this.notices.publish({kind:'switched',scope:scopeOf(key),requested:change.requested,actual:change.actual,provider:change.provider,
+      reason:switchReason(change.reason),cooldownUntil:until,at:now,...(change.retryAfterMs?{retryAfterMs:change.retryAfterMs}:{})});
+  }
+  /**
+   * An explicit user choice to continue a scope on one of its rule's targets for the rule's cooldown.
+   * It never sends anything itself; the user's next prompt is the only request that uses the route.
+   */
+  steer(i: Identity, requested: string, target: Model, now = Date.now()) {
+    const rule = this.rule(i, requested);
+    if (!rule?.targets.includes(target.id)) throw new Error('Only a target of an enabled fallback rule for this scope can be chosen.');
+    if (target.auth !== 'authenticated') throw new Error('Fallback target is not signed in: ' + target.id);
+    this.set(i,{requested,actual:target.id,provider:target.provider,cooldownMs:rule.cooldownMs,reason:'user_retry'},now);
+  }
+  /** Ends every cooldown that has run out so interfaces learn about recovery without waiting for a request. */
+  expire(now = Date.now()) {
+    for (const [key,state] of [...this.routes]) if (state.until<=now) this.recover(key,'cooldown_ended',now);
   }
   block(i: Identity,reason='interrupted') { const key = this.key(i); if (key) this.interrupted.set(key,{prompt:i.prompt,reason}); }
   isBlocked(i: Identity): boolean {
@@ -35,8 +67,14 @@ export class FallbackState {
     return true;
   }
   reset(session?: string, agent?: string) {
-    for (const map of [this.routes,this.interrupted]) for (const key of map.keys())
-      if (!session || key===session+'/'+(agent??'main')) map.delete(key);
+    const selected = (key: string) => !session || key===session+'/'+(agent??MAIN_SCOPE);
+    for (const key of [...this.routes.keys()]) if (selected(key)) this.recover(key,'reset');
+    for (const key of [...this.interrupted.keys()]) if (selected(key)) this.interrupted.delete(key);
+  }
+  private recover(key: string, cause: RecoveryCause, now = Date.now()) {
+    const state = this.routes.get(key); if (!state) return;
+    this.routes.delete(key);
+    this.notices.publish({kind:'recovered',scope:scopeOf(key),requested:state.requested,previous:state.actual,cause,at:now});
   }
 }
 

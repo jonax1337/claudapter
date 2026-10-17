@@ -221,3 +221,61 @@ test('unknown, moderate or reset quota windows keep the primary route',async t=>
   assert.equal(reader.preempt('anthropic',95,Date.now()+61_000),false,'stale telemetry never preempts');
   assert.equal(reader.preempt('anthropic',95),true);
 });
+
+const collect=(gateway)=>{const notices=[];gateway.subscribeRoutes(notice=>notices.push(notice));return notices;};
+const secretPrompt='fixture-private-prompt-body';
+test('route notices: a rate limit switch carries scope, reason, retry hint and cooldown but no secrets or bodies',async t=>{
+  const f=await fixture(t,{fallback:[rule],config:{agents:{'gpt-reviewer':'claude-sonnet-test'}},handler:(_,res,requests)=>{
+    if(requests.at(-1).body.model.startsWith('claude')){res.setHeader('retry-after','90');fail(res);}else res.end(completion());}});
+  const notices=collect(f.gateway);
+  await(await f.send({model:'claude-sonnet-test',messages:[{role:'user',content:secretPrompt}]})).text();
+  f.gateway.state.register('session-a','reviewer','gpt-reviewer');
+  await(await f.send({model:'claude-sonnet-test'},{'x-claude-code-agent-id':'reviewer','x-claude-code-request-class':'subagent'})).text();
+  const [main,agent]=notices;
+  assert.equal(main.kind,'switched');assert.deepEqual(main.scope,{session:'session-a'});
+  assert.equal(main.reason,'rate_limit');assert.equal(main.actual,'gpt-test');assert.equal(main.provider,'chatgpt');assert.equal(main.retryAfterMs,90000);
+  assert.ok(main.cooldownUntil>=main.at+60000);
+  assert.deepEqual(agent.scope,{session:'session-a',agent:'reviewer'},'sub-agent notices carry their own agent identity');
+  const serialized=JSON.stringify(notices);
+  for(const secret of ['fixture-claude-secret','fixture-codex-secret',secretPrompt,'fixture rejection'])assert.ok(!serialized.includes(secret));
+});
+test('route notices: quota pre-emption is reported as such before any primary request',async t=>{
+  const f=await fixture(t,{fallback:[rule]});const notices=collect(f.gateway);
+  seedQuota(f.gateway,97,new Date(Date.now()+3600_000).toISOString());
+  await(await f.send({model:'claude-sonnet-test'})).text();
+  assert.equal(notices.length,1);assert.equal(notices[0].kind,'switched');assert.equal(notices[0].reason,'quota_preemption');
+  assert.equal(f.requests.filter(r=>r.body.model.startsWith('claude')).length,0);
+});
+test('route notices: output then failure is interrupted, never replayed, and blocks native retries',async t=>{
+  const f=await fixture(t,{fallback:[{...rule,from:'gpt-test',targets:['claude-sonnet-test']}],handler:(_,res)=>res.end(frame({type:'response.output_text.delta',delta:'partial'}))});
+  const notices=collect(f.gateway);
+  assert.match(await(await f.send({stream:true})).text(),/Interrupted upstream/);
+  assert.equal((await f.send({stream:true})).status,400,'the same prompt cannot be retried automatically');
+  assert.equal(f.requests.length,1,'exactly one upstream request: no replay on the fallback target');
+  assert.deepEqual(notices.map(n=>n.kind),['interrupted']);
+  assert.equal(notices[0].actual,'gpt-test');assert.equal(notices[0].requested,'gpt-test');
+});
+test('route notices: an exhausted chain names its models and the final reason',async t=>{
+  const f=await fixture(t,{fallback:[rule],handler:(_,res)=>fail(res,503,'overloaded_error')});const notices=collect(f.gateway);
+  assert.equal((await f.send({model:'claude-sonnet-test'})).status,503);
+  assert.deepEqual(notices.map(n=>n.kind),['exhausted']);
+  assert.deepEqual(notices[0].chain,['claude-sonnet-test','gpt-test']);assert.equal(notices[0].reason,'unavailable');
+});
+test('route notices: an eligible limit without a rule is announced as unprotected; auxiliary traffic is not',async t=>{
+  const f=await fixture(t,{handler:(_,res)=>fail(res)});const notices=collect(f.gateway);
+  assert.equal((await f.send({model:'claude-sonnet-test'})).status,429);
+  assert.equal((await f.send({model:'claude-sonnet-test'},{'x-claude-code-request-class':'auxiliary'})).status,429);
+  assert.deepEqual(notices.map(n=>[n.kind,n.reason,n.provider]),[['unprotected','rate_limit','anthropic']]);
+});
+test('route notices: expiry and reset announce recovery; a user retry steers only to rule targets',async t=>{
+  const f=await fixture(t,{fallback:[rule]});const notices=collect(f.gateway);
+  const target=f.registry.resolve('gpt-test');const identity={session:'session-a',requestClass:'main'};
+  f.gateway.state.steer(identity,'claude-sonnet-test',target,1000);
+  assert.equal(notices[0].reason,'user_retry');assert.equal(notices[0].cooldownUntil,1000+rule.cooldownMs);
+  f.gateway.state.expire(1000+rule.cooldownMs);
+  assert.deepEqual([notices[1].kind,notices[1].cause,notices[1].previous],['recovered','cooldown_ended','gpt-test']);
+  f.gateway.state.steer(identity,'claude-sonnet-test',target);f.gateway.state.reset('session-a');
+  assert.equal(notices.at(-1).cause,'reset');assert.equal(f.gateway.state.routes.size,0);
+  assert.throws(()=>f.gateway.state.steer(identity,'gpt-test',target),/enabled fallback rule/);
+  assert.throws(()=>f.gateway.state.steer(identity,'claude-sonnet-test',{...target,auth:'missing'}),/not signed in/);
+});

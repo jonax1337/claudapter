@@ -36,16 +36,16 @@ function linePartsOf(task: TaskView, now: number): LinePart[] {
   ];
 }
 
-function statusColor(theme: Theme, status: TaskStatus) {
+export function statusColor(theme: Theme, status: TaskStatus) {
   if (status === 'completed') return theme.success;
   if (status === 'failed') return theme.error;
   if (status === 'stopped' || status === 'paused') return theme.warning;
   return status === 'running' ? theme.accent : theme.muted;
 }
 
-function TaskIcon(props: { status: TaskStatus; selected?: boolean }) {
+export function TaskIcon(props: { status: TaskStatus; selected?: boolean }) {
   const theme = useTheme();
-  const color = () => props.selected ? theme().background : statusColor(theme(), props.status);
+  const color = () => props.selected ? theme().selectionText : statusColor(theme(), props.status);
   return (
     <Show when={props.status === 'running'} fallback={<text fg={color()} wrapMode="none">{statusGlyph(props.status)}</text>}>
       <Spinner color={color()} />
@@ -62,9 +62,9 @@ function TaskLine(props: TaskLineProps) {
   const fixedWidth = () => textWidth(props.row.prefix) + 4;
   const parts = createMemo(() => fitSegments(linePartsOf(task(), props.now), props.width - fixedWidth() - MIN_TITLE_WIDTH - SEGMENT_GAP));
   const titleWidth = () => Math.max(1, props.width - fixedWidth() - parts().reduce((sum, part) => sum + part.width + SEGMENT_GAP, 0));
-  const color = (tone: ToneName) => props.selected ? theme().background : theme()[tone];
+  const color = (tone: ToneName) => props.selected ? theme().selectionText : theme()[tone];
   return (
-    <box flexDirection="row" height={1} flexShrink={0} backgroundColor={props.selected ? theme().accent : undefined}>
+    <box flexDirection="row" height={1} flexShrink={0} backgroundColor={props.selected ? theme().selection : undefined}>
       <text fg={color('muted')} wrapMode="none">{props.row.prefix}</text>
       <TaskIcon status={task().status} selected={props.selected} />
       <text fg={color('text')} wrapMode="none" attributes={props.selected ? TextAttributes.BOLD : undefined}>
@@ -111,13 +111,15 @@ export interface TasksPanelProps {
   details: boolean;
   stopTask?(id: string): void | Promise<void>;
   agentTranscript?(id: string): TranscriptEntry[] | Promise<TranscriptEntry[]>;
+  /** Switches the session to the agent's own view; the panel closes. */
+  onOpenAgent?(id: string): void;
   onClose(): void;
 }
 
 type PanelView = 'list' | 'detail' | 'transcript';
 
-const LIST_HINTS: KeyHint[] = [['↑↓', 'select'], ['enter', 'details'], ['x', 'stop'], ['esc', 'close']];
-const DETAIL_HINTS: KeyHint[] = [['t', 'transcript'], ['x', 'stop'], ['esc', 'back']];
+const LIST_HINTS: KeyHint[] = [['↑↓', 'select'], ['enter', 'details'], ['o', 'open view'], ['x', 'stop'], ['esc', 'close']];
+const DETAIL_HINTS: KeyHint[] = [['t', 'transcript'], ['o', 'open view'], ['x', 'stop'], ['esc', 'back']];
 const TRANSCRIPT_HINTS: KeyHint[] = [['↑↓', 'scroll'], ['esc', 'back']];
 
 /** Tree of agents and workflows with a detail view, agent transcripts and stop; opened with ctrl+t or /tasks. */
@@ -163,6 +165,11 @@ export function TasksPanel(props: TasksPanelProps) {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Stopping the task failed.'); }
   };
   const showTranscript = () => { if (canTranscript()) setView('transcript'); };
+  const openAgentView = () => {
+    const task = selected();
+    if (task?.kind === 'agent' && props.onOpenAgent) props.onOpenAgent(task.id);
+    else setError('Only agents have a view of their own.');
+  };
 
   function handleConfirmKey(event: KeyEvent) {
     event.preventDefault();
@@ -174,12 +181,12 @@ export function TasksPanel(props: TasksPanelProps) {
     const actions: Record<string, () => void> = {
       up: () => move(-1), down: () => move(1), pageup: () => move(-page), pagedown: () => move(page),
       home: () => move(-rows().length), end: () => move(rows().length),
-      return: () => { const task = selected(); if (task) open(task.id); }, x: askToStop, escape: props.onClose,
+      return: () => { const task = selected(); if (task) open(task.id); }, x: askToStop, o: openAgentView, escape: props.onClose,
     };
     return runKeyAction(event, actions);
   }
   function handleDetailKey(event: KeyEvent) {
-    return runKeyAction(event, { escape: () => setView('list'), t: showTranscript, return: showTranscript, x: askToStop });
+    return runKeyAction(event, { escape: () => setView('list'), t: showTranscript, return: showTranscript, o: openAgentView, x: askToStop });
   }
   function handleTranscriptKey(event: KeyEvent) {
     const page = Math.max(1, bodyLimit() - TRANSCRIPT_CHROME_ROWS);

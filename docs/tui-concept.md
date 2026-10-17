@@ -153,9 +153,10 @@ Evidence and sources: [context checks](context-evidence.md),
 
 ## Remaining parity and release gates
 
-Full native parity is **not** established. Voice, cloud/teleport, artifacts,
-complete IDE onboarding, working-directory changes with renewed trust and
-advanced native editor interactions remain incomplete or outside verified coverage.
+Full native parity is **not** established. Voice, cloud/teleport, artifacts and
+complete IDE onboarding stay native-only; side questions, `/cd` with renewed trust, Vim
+editing and a checkpoint-summary approximation are implemented but only partly
+live-verified. See [parity-plan.md](parity-plan.md) for the triage and its evidence.
 External OAuth completion, browser-device selection and Remote Control require
 live account/browser acceptance beyond fixture responses and available methods.
 

@@ -6,11 +6,13 @@ import type { Model } from '../models.js';
 import type { UsageSnapshot } from '../usage.js';
 import { safeText, wrapText } from './editor.js';
 import { markdownLines, type Span } from './markdown.js';
+import type { ImageRef } from './image-info.js';
+import type { PermissionRecord } from './transcript-model.js';
 import { viewportStart, type ScrollAnchor } from './viewport.js';
 
 export type TranscriptEntry = {
   id: string;
-  kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'notice' | 'error';
+  kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'notice' | 'error' | 'permission';
   text: string;
   toolName?: string;
   status?: 'running' | 'done' | 'error';
@@ -31,6 +33,10 @@ export type TranscriptEntry = {
   elapsedMs?: number;
   /** Raw structured tool result (e.g. Edit/Write patch data), at most 16 KB serialized. */
   result?: unknown;
+  /** Permission request and its decision, for `permission` entries. */
+  permission?: PermissionRecord;
+  /** Images attached to a prompt or returned by a tool. */
+  images?: ImageRef[];
 };
 export type Entry = TranscriptEntry;
 
@@ -53,7 +59,7 @@ export function transcriptLines(entries: TranscriptEntry[], width: number, showT
   const columns = dimension(width);
   const lines: TranscriptLine[] = [];
   for (const entry of entries) {
-    if (entry.kind === 'thinking' && !showThinking) continue;
+    if ((entry.kind === 'thinking' && !showThinking) || entry.kind === 'permission') continue;
     const signature = JSON.stringify([columns, showDetails, lines.length === 0, entry]);
     const cached = entryLayouts.get(entry.id);
     if (cached?.signature === signature) { lines.push(...cached.lines); continue; }

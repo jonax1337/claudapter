@@ -25,7 +25,7 @@ complete, enter run, esc dismiss), prompt history on ↑/↓ from an empty promp
 permission-mode badge with model and provider. Below it, a status bar shows an
 animated scanner, elapsed time and `esc interrupt` during a turn, and context usage
 otherwise. Command errors appear as a dismissing toast. Themes: midnight, ocean,
-terminal and contrast (`/theme`). The historical details below describe
+ember, daylight, terminal and contrast (`/theme`). The historical details below describe
 the earlier Ink implementation and are not a blanket parity claim for the new UI.
 Frozen selection during streaming, styled Markdown fidelity, theme coverage and every
 administrative interaction still require full acceptance. The earlier Ink source
@@ -57,6 +57,23 @@ workflows, shells and monitors with status, elapsed time, progress summaries,
 details, agent transcripts (t) and stopping (x). While they run, a live strip
 above the composer shows each task tree, and the status bar summarizes them
 ("◉ 2 agents · ⛓ 1 workflow"); clicking that chip opens the panel.
+
+Sub-agents never stream into the main transcript. Each agent launch is one
+live row there (status, type, the model and provider the gateway actually
+routed it to, fallback reason, elapsed time, tokens, last action); the agent's
+text, thinking, tool calls and results are captured into its own view whether
+or not it is open. A tab strip above the composer ("main · ● Explore · ✗
+general-purpose") switches views: Alt+←/→ cycles, Alt+0…9 picks, `/agent` lists
+them, `o` in the Ctrl+T panel or a click on a summary row opens one, and Esc
+returns to the previous view. In an agent view the composer addresses that
+agent and Ctrl+B moves a foreground agent to the background. Claude Code
+2.1.301–2.1.302 has no host request that writes into a sub-agent's
+conversation, so Claudapter asks the main agent to call `SendMessage` (a main
+turn); the view then shows the call's own outcome: queued for a running agent's
+next tool round, a finished agent resumed, or the engine's refusal, for
+example for agents you stopped. Sessions without the `SendMessage` tool show
+the agent composer as unavailable. Stopping an agent (x in Ctrl+T) never
+interrupts the main turn.
 `/details` expands or collapses tool inputs/output; failed tools keep their
 error details visible. Assistant Markdown supports inline emphasis/code, lists,
 quotes, links and fenced blocks; tables use labelled rows on narrow terminals.
@@ -68,7 +85,16 @@ an overlay; Ctrl+C interrupts work, or twice while idle exits. Permission and
 trust dialogs default to decline. Questions support choices, multi-selection
 and a typed answer; Tab moves between fields and the final decision.
 
-`/theme` offers Midnight, Ocean, Terminal and Contrast. `/keybindings` changes
+`/theme` offers Midnight, Ocean, Ember, Daylight (light), Terminal and Contrast and
+previews each one while you browse; Esc restores the saved theme. Every theme is
+checked for WCAG contrast (text 7:1, secondary and status text 4.5:1, also after
+256-color degradation). `NO_COLOR` switches to a hue-free palette, terminals that
+report only 16 colors (`TERM=linux`, `FORCE_COLOR=1`) get an ANSI-only palette, and
+`CLAUDAPTER_REDUCED_MOTION=1` freezes spinners, scanners and dialog fades. Press `?`
+on an empty prompt for the keyboard shortcut overview. The home screen shows which
+providers are usable (Claude, ChatGPT, Z.ai in their identity colors; `○ sign in`
+when every model of a provider lacks credentials) and up to three recent sessions,
+which resume on click. `/keybindings` changes
 Claudapter shortcuts. `/favorite` stars models. These preferences live only in
 `CLAUDAPTER_HOME/ui.json`; native colors and keybindings are untouched.
 
@@ -128,12 +154,15 @@ special dialogs require private methods, pinned to SDK **0.3.301** and installed
 Claude Code **2.1.301 or 2.1.302**. Those methods refuse an unknown version. This is tested
 compatibility, not an upstream guarantee.
 
-Full native feature parity is **not complete**. Cloud/environment/artifact
-selectors, IDE onboarding, voice, account privacy/upgrade/passes, side questions,
-tutorial/demo panels, advanced editor/Vim behaviors and full checkpoint
-summarization still lack equivalent own flows. `/cd` needs coordinated gateway
-revalidation and session relocation. Native sandboxing is unavailable on the
-tested Windows host. Successful external OAuth, connected-browser selection and
+Full native feature parity is **not complete**. Triage and status of each gap are in
+[parity-plan.md](parity-plan.md). Own flows now exist for side questions (`/btw`),
+`/cd` (with settings revalidation and renewed trust), an optional Vim mode with a kill
+ring and safe paste (`/vim`), a checkpoint summary approximation, `/account`, `/privacy`
+and `/upgrade` (browser only after confirmation), `/keymap` and `/tutorial`. Cloud,
+environment, artifact selectors, IDE onboarding, voice and passes remain native-only; their
+commands (`/cloud`, `/artifacts`, `/ide`, `/voice`, `/passes`) only explain that and never
+hand the dialog to the native UI. True partial checkpoint compaction is not available.
+Native sandboxing is unavailable on the tested Windows host. Successful external OAuth, connected-browser selection and
 remote activation need interactive acceptance with those services.
 
 Native auto permission mode can require a safety-classifier model that the

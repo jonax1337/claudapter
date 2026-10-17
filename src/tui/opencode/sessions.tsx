@@ -3,6 +3,8 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, o
 import { useKeyboard } from '@opentui/solid';
 import { TextAttributes, type KeyEvent, type ScrollBoxRenderable } from '@opentui/core';
 import { Dialog, KeyHints, useDialogBodyLimit, useDialogContentWidth, type KeyHint } from './dialog';
+import { padToWidth, truncate } from './layout';
+import { MatchText } from './menu';
 import { Spinner } from './status';
 import { useTheme } from './theme';
 import {
@@ -44,7 +46,6 @@ const WIDE_ROW = 52;
 /** Rows below the list: margin plus the three preview lines. */
 const PREVIEW_RESERVED_ROWS = 4;
 const MIN_LIST_ROWS = 3;
-const ELLIPSIS = '…';
 const OPEN_MARKER = '●';
 
 export function SessionPicker(props: SessionPickerProps) {
@@ -133,7 +134,7 @@ export function SessionPicker(props: SessionPickerProps) {
 
   function handleListKey(event: KeyEvent) {
     const session = highlighted();
-    if (event.name === 'escape') props.onClose();
+    if (event.name === 'escape') { if (query()) setQuery(''); else props.onClose(); }
     else if (['up', 'down', 'pageup', 'pagedown', 'home', 'end'].includes(event.name)) { setNotice(''); navigate(event.name); }
     else if (event.name === 'return' && session) void resume(session);
     else if (event.ctrl && event.name === 'd' && session) setMode({ kind: 'confirm-delete', session });
@@ -178,9 +179,10 @@ export function SessionPicker(props: SessionPickerProps) {
     if (current === 'confirm-delete') return [[['enter', 'delete'], ['esc', 'cancel']]];
     if (current === 'rename') return [[['enter', 'save'], ['esc', 'cancel']]];
     if (current !== 'list') return [[['esc', 'close']]];
+    const escape: KeyHint = ['esc', query() ? 'clear' : 'close'];
     return narrow() ?
-      [[['↑↓', 'select'], ['enter', 'resume'], ['esc', 'close']], [['^d', 'delete'], ['^r', 'rename'], ['^f', 'fork']]] :
-      [[['↑↓', 'select'], ['enter', 'resume'], ['ctrl+d', 'delete'], ['ctrl+r', 'rename'], ['ctrl+f', 'fork'], ['esc', 'close']]];
+      [[['↑↓', 'select'], ['enter', 'resume'], escape], [['^d', 'delete'], ['^r', 'rename'], ['^f', 'fork']]] :
+      [[['↑↓', 'select'], ['enter', 'resume'], ['ctrl+d', 'delete'], ['ctrl+r', 'rename'], ['ctrl+f', 'fork'], escape]];
   };
   const footer = () => <box flexDirection="column">
     <For each={footerRows()}>{hints => <KeyHints hints={hints} />}</For>
@@ -204,7 +206,7 @@ export function SessionPicker(props: SessionPickerProps) {
           <Show when={renaming()} fallback={
             <box marginTop={1} flexShrink={0} backgroundColor={theme().element} paddingLeft={ROW_PADDING} paddingRight={ROW_PADDING}>
               <input focused={mode().kind === 'list'} value={query()} placeholder="Search title, prompt, branch or id"
-                textColor={theme().text} focusedTextColor={theme().text}
+                textColor={theme().text} focusedTextColor={theme().text} placeholderColor={theme().muted}
                 backgroundColor={theme().element} focusedBackgroundColor={theme().element} onInput={setQuery} />
             </box>
           }>
@@ -220,7 +222,7 @@ export function SessionPicker(props: SessionPickerProps) {
                 onHover={setSelected} onChoose={session => void resume(session)} />
               <Show when={confirming()} fallback={<SessionPreview session={highlighted()} width={contentWidth()} />}>
                 {session => <text fg={theme().warning} marginTop={1}>
-                  {fit('Delete “' + sessionTitle(session()) + '”? This cannot be undone.', contentWidth(), true)}</text>}
+                  {truncate('Delete “' + sessionTitle(session()) + '”? This cannot be undone.', contentWidth())}</text>}
               </Show>
               <Show when={notice()}><text fg={theme().error}>{notice()}</text></Show>
             </>
@@ -255,7 +257,8 @@ function SessionList(props: SessionListProps) {
       <For each={props.rows}>{row => row.kind === 'header' ?
         <text fg={theme().muted} attributes={TextAttributes.BOLD} paddingLeft={ROW_PADDING} height={1} flexShrink={0}>{row.label}</text> :
         <SessionRow session={row.item} active={row.index === props.selected} open={row.item.sessionId === props.currentId}
-          width={innerWidth()} now={props.now} onHover={() => props.onHover(row.index)} onChoose={() => props.onChoose(row.item)} />
+          width={innerWidth()} now={props.now} query={props.query}
+          onHover={() => props.onHover(row.index)} onChoose={() => props.onChoose(row.item)} />
       }</For>
       <Show when={!props.rows.length}>
         <text fg={theme().muted} paddingLeft={ROW_PADDING}>
@@ -266,19 +269,23 @@ function SessionList(props: SessionListProps) {
   );
 }
 
-function SessionRow(props: { session: SessionInfo; active: boolean; open: boolean; width: number; now: number; onHover(): void; onChoose(): void }) {
+interface SessionRowProps {
+  session: SessionInfo; active: boolean; open: boolean; width: number; now: number; query: string; onHover(): void; onChoose(): void;
+}
+
+function SessionRow(props: SessionRowProps) {
   const theme = useTheme();
   const wide = () => props.width + ROW_PADDING * 2 >= WIDE_ROW;
   const branchWidth = () => wide() ? BRANCH_COLUMN + 1 : 0;
   const titleWidth = () => props.width - MARKER_WIDTH - TIME_COLUMN - branchWidth();
-  const color = (normal: string) => props.active ? theme().background : normal;
+  const color = (normal: string) => props.active ? theme().selectionText : normal;
   return (
-    <box height={1} flexShrink={0} paddingLeft={ROW_PADDING} paddingRight={ROW_PADDING}
-      backgroundColor={props.active ? theme().accent : undefined} onMouseMove={props.onHover} onMouseUp={props.onChoose}>
-      <text wrapMode="none" attributes={props.active ? TextAttributes.BOLD : undefined}>
-        <span style={{ fg: color(theme().success) }}>{props.open ? OPEN_MARKER + ' ' : '  '}</span>
-        <span style={{ fg: color(theme().text) }}>{fit(sessionTitle(props.session), titleWidth())}</span>
-        <Show when={wide()}><span style={{ fg: color(theme().secondary) }}>{' ' + fit(props.session.gitBranch ?? '', BRANCH_COLUMN)}</span></Show>
+    <box flexDirection="row" height={1} flexShrink={0} paddingLeft={ROW_PADDING} paddingRight={ROW_PADDING}
+      backgroundColor={props.active ? theme().selection : undefined} onMouseMove={props.onHover} onMouseUp={props.onChoose}>
+      <text fg={color(theme().success)} wrapMode="none" flexShrink={0}>{props.open ? OPEN_MARKER + ' ' : '  '}</text>
+      <MatchText text={padToWidth(truncate(sessionTitle(props.session), titleWidth()), titleWidth())} query={props.query} active={props.active} />
+      <text wrapMode="none" flexShrink={0} attributes={props.active ? TextAttributes.BOLD : undefined}>
+        <Show when={wide()}><span style={{ fg: color(theme().secondary) }}>{' ' + padToWidth(truncate(props.session.gitBranch ?? '', BRANCH_COLUMN), BRANCH_COLUMN)}</span></Show>
         <span style={{ fg: color(theme().muted) }}>{relativeTime(props.session.lastModified, props.now).padStart(TIME_COLUMN)}</span>
       </text>
     </box>
@@ -294,9 +301,9 @@ function SessionPreview(props: { session: SessionInfo | undefined; width: number
   };
   return (
     <box marginTop={1} flexShrink={0} height={PREVIEW_RESERVED_ROWS - 1}>
-      <text fg={theme().text} wrapMode="none">{fit(oneLine(props.session?.firstPrompt ?? ''), props.width, true)}</text>
-      <text fg={theme().muted} wrapMode="none">{fit(props.session?.sessionId ?? '', props.width, true)}</text>
-      <text fg={theme().muted} wrapMode="none">{fit(details(), props.width, true)}</text>
+      <text fg={theme().text} wrapMode="none">{truncate(oneLine(props.session?.firstPrompt ?? ''), props.width)}</text>
+      <text fg={theme().muted} wrapMode="none">{truncate(props.session?.sessionId ?? '', props.width)}</text>
+      <text fg={theme().muted} wrapMode="none">{truncate(details(), props.width)}</text>
     </box>
   );
 }
@@ -307,12 +314,6 @@ function describe(cause: unknown, fallback: string): string {
 
 function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
-}
-
-/** Truncates with an ellipsis and, unless `loose`, pads to exactly `width` columns so rows align. */
-function fit(text: string, width: number, loose = false): string {
-  const clipped = text.length > width ? text.slice(0, Math.max(0, width - 1)) + ELLIPSIS : text;
-  return loose ? clipped : clipped.padEnd(width);
 }
 
 /** Spinner dialog for a session change that was started elsewhere (for example `/resume <id>`). */

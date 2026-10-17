@@ -3,9 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import type { Key } from 'ink';
 import { configHome } from '../config.js';
+import { isThemeName, type ThemeName } from './theme-names.js';
 
-export type ThemeName = 'midnight' | 'ocean' | 'terminal' | 'contrast';
-export interface Preferences {theme:ThemeName;thinking:boolean;favorites:string[];keybindings:Record<string,string>}
+export type { ThemeName } from './theme-names.js';
+export type EditorMode='normal'|'vim';
+/** `editorMode` is stored only once chosen, so files written before it existed round-trip unchanged. */
+export interface Preferences {theme:ThemeName;thinking:boolean;favorites:string[];keybindings:Record<string,string>;editorMode?:EditorMode}
 type ShortcutKey = Partial<Pick<Key,'ctrl'|'meta'|'shift'|'super'|'hyper'|'escape'|'tab'|'return'|'eventType'>>;
 
 export function defaultPreferences(): Preferences {
@@ -29,10 +32,10 @@ function canonicalChord(value: string): string | undefined {
 function validate(value: unknown): Preferences {
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('UI preferences must be a JSON object.');
   const saved=value as Record<string,unknown>, defaults=defaultPreferences();
-  if(Object.keys(saved).some(key=>!['theme','thinking','favorites','keybindings'].includes(key)))throw new Error('Unknown UI preference field.');
+  if(Object.keys(saved).some(key=>!['theme','thinking','favorites','keybindings','editorMode'].includes(key)))throw new Error('Unknown UI preference field.');
   const theme=saved.theme===undefined?defaults.theme:saved.theme, thinking=saved.thinking===undefined?defaults.thinking:saved.thinking;
   const favorites=saved.favorites===undefined?defaults.favorites:saved.favorites, bindings=saved.keybindings===undefined?defaults.keybindings:saved.keybindings;
-  if(typeof theme!=='string'||!['midnight','ocean','terminal','contrast'].includes(theme))throw new Error('Unknown Claudapter theme.');
+  if(!isThemeName(theme))throw new Error('Unknown Claudapter theme.');
   if(typeof thinking!=='boolean')throw new Error('The thinking preference must be boolean.');
   if(!Array.isArray(favorites)||favorites.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(id)))throw new Error('Favorites must contain valid model IDs.');
   if(!bindings||typeof bindings!=='object'||Array.isArray(bindings))throw new Error('Keybindings must map key chords to slash commands.');
@@ -44,7 +47,8 @@ function validate(value: unknown): Preferences {
     if(entries.some(([existing])=>existing===chord))throw new Error('Duplicate keybinding after normalization.');
     entries.push([chord,command]);
   }
-  return {theme:theme as ThemeName,thinking,favorites:[...new Set(favorites)],keybindings:Object.fromEntries(entries)};
+  if(saved.editorMode!==undefined&&saved.editorMode!=='normal'&&saved.editorMode!=='vim')throw new Error('The editor mode must be normal or vim.');
+  return {theme:theme as ThemeName,thinking,favorites:[...new Set(favorites)],keybindings:Object.fromEntries(entries),...(saved.editorMode?{editorMode:saved.editorMode as EditorMode}:{})};
 }
 
 function preferencesFile(home: string): string {

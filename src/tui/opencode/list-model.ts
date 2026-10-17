@@ -17,7 +17,7 @@ const WORD_SEPARATOR = /[\s\-_/.:]/;
 
 /** Higher is better; undefined when `text` does not match every whitespace-separated term of `query`. */
 export function fuzzyScore(query: string, text: string): number | undefined {
-  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = queryTerms(query);
   const haystack = text.toLowerCase();
   let total = 0;
   for (const term of terms) {
@@ -26,6 +26,38 @@ export function fuzzyScore(query: string, text: string): number | undefined {
     total += score;
   }
   return total;
+}
+
+/** A stretch of text that either matched the search query or did not; consecutive matches merge. */
+export interface TextRun { text: string; match: boolean }
+
+/**
+ * Character indices of `text` that make it match `query`, for highlighting: the substring a term matched,
+ * or the characters of its fuzzy subsequence. Empty when the query is blank or does not match.
+ */
+export function matchPositions(query: string, text: string): number[] {
+  const terms = queryTerms(query);
+  const haystack = text.toLowerCase();
+  const positions = new Set<number>();
+  for (const term of terms) {
+    const matched = termPositions(term, haystack);
+    if (!matched) return [];
+    matched.forEach(position => positions.add(position));
+  }
+  return [...positions].sort((left, right) => left - right);
+}
+
+/** Splits `text` into alternating plain and matched runs. */
+export function highlightRuns(text: string, positions: number[]): TextRun[] {
+  const matched = new Set(positions);
+  const runs: TextRun[] = [];
+  [...text].forEach((character, index) => {
+    const match = matched.has(index);
+    const last = runs.at(-1);
+    if (last && last.match === match) last.text += character;
+    else runs.push({ text: character, match });
+  });
+  return runs;
 }
 
 /** Items matching `query` best-first; ties keep their original order. An empty query keeps every item. */
@@ -76,6 +108,10 @@ export function moveSelection(current: number, delta: number, count: number): nu
   return Math.max(0, Math.min(count - 1, current + delta));
 }
 
+function queryTerms(query: string): string[] {
+  return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
 function bestScore(query: string, fields: readonly SearchField[]): number | undefined {
   let best: number | undefined;
   for (const [text, weight] of fields) {
@@ -92,13 +128,31 @@ function termScore(term: string, haystack: string): number | undefined {
   return SUBSTRING_BASE - at * SUBSTRING_POSITION_PENALTY + wordStart;
 }
 
-function subsequenceScore(term: string, haystack: string): number | undefined {
-  let score = 0;
+function termPositions(term: string, haystack: string): number[] | undefined {
+  const at = haystack.indexOf(term);
+  if (at >= 0) return Array.from({ length: term.length }, (_, offset) => at + offset);
+  return subsequencePositions(term, haystack);
+}
+
+function subsequencePositions(term: string, haystack: string): number[] | undefined {
+  const positions: number[] = [];
   let from = 0;
-  let previous = -2;
   for (const char of term) {
     const at = haystack.indexOf(char, from);
     if (at < 0) return undefined;
+    positions.push(at);
+    from = at + 1;
+  }
+  return positions;
+}
+
+function subsequenceScore(term: string, haystack: string): number | undefined {
+  const positions = subsequencePositions(term, haystack);
+  if (!positions) return undefined;
+  let score = 0;
+  let from = 0;
+  let previous = -2;
+  for (const at of positions) {
     score += SUBSEQUENCE_CHAR - Math.min(at - from, SUBSEQUENCE_MAX_GAP_PENALTY);
     if (at === previous + 1) score += SUBSEQUENCE_CONSECUTIVE;
     if (isWordStart(haystack, at)) score += SUBSEQUENCE_WORD_START;

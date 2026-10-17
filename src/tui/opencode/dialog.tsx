@@ -2,12 +2,13 @@
 import { RGBA, TextAttributes } from '@opentui/core';
 import { useTerminalDimensions } from '@opentui/solid';
 import { For, Show, type JSX } from 'solid-js';
+import { useFadeIn } from './motion';
 import { useTheme } from './theme';
 
 export type DialogSize = 'medium' | 'large';
 
 const DIALOG_WIDTH: Record<DialogSize, number> = { medium: 60, large: 88 };
-const BACKDROP = RGBA.fromInts(0, 0, 0, 150);
+const BACKDROP_ALPHA = 150;
 const SCREEN_MARGIN = 2;
 const HORIZONTAL_PADDING = 2;
 /** Rows taken by the header, footer and vertical padding around a dialog body. */
@@ -45,9 +46,11 @@ export function Dialog(props: DialogProps) {
   const theme = useTheme();
   const dimensions = useTerminalDimensions();
   const contentWidth = useDialogContentWidth(props.size);
+  const fade = useFadeIn();
+  const backdrop = () => RGBA.fromInts(0, 0, 0, Math.round(BACKDROP_ALPHA * fade()));
   return (
     <box position="absolute" left={0} top={0} width={dimensions().width} height={dimensions().height} zIndex={3000}
-      backgroundColor={BACKDROP} alignItems="center" paddingTop={topOffset(dimensions().height)}
+      backgroundColor={backdrop()} alignItems="center" paddingTop={topOffset(dimensions().height)}
       onMouseUp={() => props.onBackdrop?.()}>
       <box width={contentWidth() + HORIZONTAL_PADDING * 2} backgroundColor={theme().panel}
         paddingLeft={HORIZONTAL_PADDING} paddingRight={HORIZONTAL_PADDING} paddingTop={1} paddingBottom={1}

@@ -6,6 +6,13 @@ export const PASTE_COLLAPSE_LINES = 20;
 const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i;
 const QUOTED = /^(["'])(.*)\1$/;
 
+/** Pastes beyond this many characters are refused instead of freezing the prompt. */
+export const MAX_PASTE_CHARS = 500_000;
+
+export function pasteTooLarge(text: string) {
+  return text.length > MAX_PASTE_CHARS;
+}
+
 export type PastedBlocks = ReadonlyMap<string, string>;
 
 export function lineCount(text: string) {

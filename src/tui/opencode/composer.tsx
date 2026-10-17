@@ -3,13 +3,18 @@ import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { TextAttributes, type KeyEvent, type PasteEvent, type TextareaRenderable } from '@opentui/core';
 import { useTerminalDimensions } from '@opentui/solid';
-import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { safeText } from '../../../dist/tui/editor.js';
+import { emptyKillRing, kill, yank, yankPop, type KillRing } from '../../../dist/tui/kill-ring.js';
+import { sideQuestionOf } from '../../../dist/tui/side-question.js';
+import { initialVimState, noteInsert, vimKey } from '../../../dist/tui/vim.js';
 import { saveClipboardImage } from './clipboard-image';
 import {
   attachmentChip, continuesLine, cursorIndex, cursorPosition, expandPastes, lineCount, pastedImagePath, pasteToken,
-  shouldCollapsePaste, withoutContinuation, type Attachment,
+  pasteTooLarge, shouldCollapsePaste, withoutContinuation, type Attachment,
 } from './composer-text';
+import { editsText, killCommandOf, VIM_MODE_LABELS, readDocument, showSelection, vimKeyName, writeDocument } from './composer-vim';
+import { editorMode, markEscapeConsumed, setVimMode, vimMode } from './editor-mode';
 import { applyMention, createFileIndex, listWorkspaceFiles, mentionAt, rankFiles } from './mentions';
 import { useTheme, type Theme } from './theme';
 
@@ -17,6 +22,8 @@ export interface CommandInfo { name: string; description?: string }
 
 export interface ComposerProps {
   disabled: boolean;
+  /** A turn is running: the prompt stays editable but only `/btw` side questions can be sent. */
+  busy?: boolean;
   /** Shown in place of the placeholder while disabled, so the user knows what the composer is waiting for. */
   disabledReason?: string;
   model: string;
@@ -55,7 +62,9 @@ const COMPACT_WIDTH = 44;
 const DESCRIPTION_GAP = 2;
 const SLASH_QUERY = /^\/(\S*)$/;
 const PLACEHOLDER = 'Ask anything, @ to mention a file, / for commands';
-const INPUT_KEY_BINDINGS = [
+const BUSY_PLACEHOLDER = 'Claude is working · esc to interrupt · /btw <question> asks on the side';
+const BUSY_SUBMIT_HINT = 'Claude is working. Press esc to interrupt, or use /btw <question> for a side question.';
+export const INPUT_KEY_BINDINGS = [
   { name: 'return', action: 'submit' }, { name: 'return', shift: true, action: 'newline' }, { name: 'return', meta: true, action: 'newline' },
 ] as const;
 
@@ -91,15 +100,20 @@ export function Composer(props: ComposerProps) {
   const pastes = new Map<string, string>();
   const fileIndex = createFileIndex(() => (props.listFiles ?? (() => listWorkspaceFiles(props.cwd ?? process.cwd())))());
   let historyIndex: number | undefined;
+  let vim = initialVimState();
+  let killRing: KillRing = emptyKillRing();
+  let lastKeyWasKill = false;
+  const vimActive = () => editorMode() === 'vim';
+  const commandMode = () => vimActive() && vimMode() !== 'insert';
   const accent = () => modeColor(theme(), props.mode);
   const padding = () => dimensions().width < COMPACT_WIDTH ? 1 : 2;
-  const placeholder = () => props.disabled ? props.disabledReason ?? 'Unavailable right now' : PLACEHOLDER;
+  const placeholder = () => props.disabled ? props.disabledReason ?? 'Unavailable right now' : props.busy ? BUSY_PLACEHOLDER : PLACEHOLDER;
 
   const mention = createMemo(() => text() === dismissed() ? undefined : mentionAt(text(), cursor()));
   createEffect(() => { if (mention()) void fileIndex.files().then(setFiles); });
   const suggestions = createMemo<Suggestion[]>(() => {
     const slashQuery = SLASH_QUERY.exec(text())?.[1];
-    if (text() === dismissed()) return [];
+    if (text() === dismissed() || commandMode()) return [];
     if (slashQuery !== undefined) return rankedCommands(props.commands ?? [], slashQuery).map(command => ({
       label: command.name, detail: command.description, submitsOnEnter: true, accept: () => replaceText(command.name + ' '),
     }));
@@ -109,6 +123,10 @@ export function Composer(props: ComposerProps) {
     })) : [];
   });
   createEffect(() => { suggestions(); setHighlighted(0); });
+  createEffect(() => { if (!vimActive()) { vim = initialVimState(); setVimMode('insert'); } });
+  setVimMode(vim.mode);
+  onCleanup(() => setVimMode('insert'));
+  createEffect(() => { if (input) input.cursorStyle = { style: commandMode() || !vimActive() ? 'block' : 'line', blinking: true }; });
   createEffect(() => { const recalled = props.recalled; if (recalled && input) replaceText(recalled.text); });
   // A closing dialog leaves focus nowhere; reclaim it whenever the composer becomes editable again.
   createEffect(() => { if (!props.disabled && !submitting() && input) input.focus(); });
@@ -143,6 +161,7 @@ export function Composer(props: ComposerProps) {
   }
   async function submit() {
     if (props.disabled || submitting() || !input || !input.plainText.trim()) return;
+    if (props.busy && sideQuestionOf(input.plainText) === undefined) { setError(BUSY_SUBMIT_HINT); return; }
     const submittedInput = input;
     const typed = input.plainText;
     setSubmitting(true);
@@ -172,12 +191,13 @@ export function Composer(props: ComposerProps) {
     const resolvedImage = imagePath && resolve(props.cwd ?? process.cwd(), imagePath);
     if (!pasted.trim()) { event.preventDefault(); void attachClipboardImage(); }
     else if (resolvedImage && isFile(resolvedImage)) { event.preventDefault(); addAttachment(resolvedImage); }
+    else if (pasteTooLarge(pasted)) { event.preventDefault(); setError('That paste is too large for the prompt. Attach it as a file instead.'); }
     else if (shouldCollapsePaste(pasted)) {
       event.preventDefault();
       const token = pasteToken(lineCount(pasted), pastes.keys());
       pastes.set(token, pasted);
       input!.insertText(token);
-    }
+    } else { event.preventDefault(); input!.insertText(pasted); }
   }
 
   /** Steps through history; returns false when the key should keep its editing meaning. */
@@ -214,9 +234,39 @@ export function Composer(props: ComposerProps) {
     }
     return false;
   }
+  /** Kill-ring commands (ctrl+k/u/w, alt+d/backspace, ctrl+y, alt+y); returns whether the key was one. */
+  function handleKillKey(event: KeyEvent) {
+    const command = commandMode() ? undefined : killCommandOf(event);
+    const continuing = lastKeyWasKill;
+    lastKeyWasKill = false;
+    if (!command) { killRing = { entries: killRing.entries }; return false; }
+    const doc = readDocument(input!);
+    const outcome = command === 'yank' ? yank(killRing, doc) : command === 'yank-pop' ? yankPop(killRing, doc) : kill(killRing, doc, command, continuing);
+    if (outcome) { killRing = outcome.ring; writeDocument(input!, outcome.doc); lastKeyWasKill = command !== 'yank' && command !== 'yank-pop'; syncState(); }
+    return true;
+  }
+  /** Vim mode: normal and visual keys are interpreted here; insert-mode typing stays with the editor. */
+  function handleVimKey(event: KeyEvent) {
+    if (!vimActive()) return false;
+    const key = vimKeyName(event);
+    if (key === undefined) return commandMode() && editsText(event);
+    const modeBefore = vim.mode;
+    const result = vimKey(vim, readDocument(input!), key);
+    const typed = key === 'Backspace' || Array.from(key).length === 1 ? key : undefined;
+    vim = result.handled || typed === undefined ? result.state : noteInsert(result.state, typed);
+    setVimMode(vim.mode);
+    if (key === 'Escape' && vim.mode !== modeBefore) markEscapeConsumed(event);
+    if (!result.handled) return false;
+    writeDocument(input!, result.doc);
+    if (result.history) { if (result.history === 'undo') input!.undo(); else input!.redo(); }
+    showSelection(input!, vim);
+    syncState();
+    if (result.submit) void submit();
+    return true;
+  }
   function handleKey(event: KeyEvent) {
     if (props.disabled) { event.preventDefault(); return; }
-    const handled = (suggestions().length && handleSuggestionKey(event)) || handleEditingKey(event) ||
+    const handled = (suggestions().length && handleSuggestionKey(event)) || handleVimKey(event) || handleKillKey(event) || handleEditingKey(event) ||
       ((event.name === 'up' || event.name === 'down') && recallHistory(event.name === 'up' ? -1 : 1));
     if (handled) event.preventDefault();
   }
@@ -260,6 +310,7 @@ export function Composer(props: ComposerProps) {
             <text fg={accent()} attributes={TextAttributes.BOLD} wrapMode="none">{MODE_LABELS[props.mode ?? 'default'] ?? props.mode}</text>
             <text fg={theme().text} wrapMode="none">{props.model}</text>
             <Show when={props.provider}><text fg={theme().muted} wrapMode="none">{props.provider}</text></Show>
+            <Show when={vimActive()}><text fg={theme().warning} attributes={TextAttributes.BOLD} wrapMode="none">{VIM_MODE_LABELS[vimMode()]}</text></Show>
           </box>
         </box>
       </box>
@@ -282,11 +333,11 @@ function SuggestionList(props: SuggestionListProps) {
       <For each={props.items}>{(item, index) => {
         const active = () => index() === props.highlighted;
         return <box flexDirection="row" gap={DESCRIPTION_GAP} height={1} paddingLeft={props.padding} paddingRight={props.padding}
-          backgroundColor={active() ? theme().accent : undefined}
+          backgroundColor={active() ? theme().selection : undefined}
           onMouseMove={() => props.onHover(index())} onMouseUp={() => props.onPick(index())}>
-          <text fg={active() ? theme().background : theme().text} attributes={active() ? TextAttributes.BOLD : undefined}
+          <text fg={active() ? theme().selectionText : theme().text} attributes={active() ? TextAttributes.BOLD : undefined}
             wrapMode="none" flexShrink={0}>{item.label}</text>
-          <text fg={active() ? theme().background : theme().muted} wrapMode="none">{item.detail ?? ''}</text>
+          <text fg={active() ? theme().selectionText : theme().muted} wrapMode="none">{item.detail ?? ''}</text>
         </box>;
       }}</For>
     </box>

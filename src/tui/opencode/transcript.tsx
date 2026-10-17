@@ -1,9 +1,13 @@
 // Message layout adapted from OpenCode routes/session/{index,message-parts}.tsx (MIT, see docs/opencode-provenance.md).
-import { For, Match, Show, Switch, createMemo, type JSX } from 'solid-js';
-import { SyntaxStyle, TextAttributes } from '@opentui/core';
-import { useRenderer } from '@opentui/solid';
-import { SPLIT_BORDER, ToolView, indentFor, toolSummary, type TranscriptEntry } from './tool-views';
-import { useTheme, type Theme } from './theme';
+import { For, Index, Match, Show, Switch, createMemo, type JSX } from 'solid-js';
+import { TextAttributes } from '@opentui/core';
+import { CodeBlock } from './block-code';
+import { ImageList } from './block-image';
+import { PermissionRow } from './block-permission';
+import { useSyntaxStyle } from './block-syntax';
+import { splitFences } from './markdown-blocks';
+import { SPLIT_BORDER, ToolView, indentFor, summarizeInput, toolSummary, type TranscriptEntry } from './tool-views';
+import { useTheme } from './theme';
 
 export { toolSummary, type TranscriptEntry };
 
@@ -11,21 +15,17 @@ const AGENT_RULE = { ...SPLIT_BORDER, vertical: '│' };
 const AGENT_INDENT = 2;
 const THOUGHT_NOTE = '(content not provided by the model)';
 
-function markdownStyle(theme: Theme, base: string) {
-  return {
-    default: { fg: base },
-    'markup.heading': { fg: theme.accent, bold: true },
-    'markup.strong': { bold: true },
-    'markup.italic': { italic: true },
-    'markup.strikethrough': { dim: true },
-    'markup.raw': { fg: theme.secondary },
-    'markup.raw.block': { fg: theme.secondary },
-    'markup.link': { fg: theme.secondary },
-    'markup.link.label': { fg: theme.secondary, underline: true },
-    'markup.link.url': { fg: theme.muted, underline: true },
-    'markup.quote': { fg: theme.muted, italic: true },
-    'markup.list': { fg: theme.accent },
-  };
+/**
+ * Extension points for features that add to the transcript without editing the renderers. Every hook is
+ * optional and called per entry:
+ * - `entryFooter` renders under an entry (for example a route badge or turn footer under an assistant entry);
+ * - `taskCall` replaces the default launch card of a sub-agent or workflow tool call (compact agent summary row);
+ * - `hide` removes an entry from the main thread (for example sub-agent stream content).
+ */
+export interface TranscriptSlots {
+  entryFooter?(entry: TranscriptEntry): JSX.Element | undefined;
+  taskCall?(entry: TranscriptEntry): JSX.Element | undefined;
+  hide?(entry: TranscriptEntry): boolean;
 }
 
 function formatTokens(count: number): string {
@@ -39,6 +39,8 @@ function tokenNote(entry: TranscriptEntry): string {
 /** Thinking entries only appear while the toggle is on; empty assistant entries never produce a blank row. */
 export function isRenderable(entry: TranscriptEntry, showThinking: boolean): boolean {
   if (entry.kind === 'thinking') return showThinking;
+  if (entry.kind === 'permission') return !!entry.permission;
+  if (entry.kind === 'user') return entry.text.trim() !== '' || !!entry.images?.length;
   return entry.kind !== 'assistant' || entry.text.trim() !== '';
 }
 
@@ -47,19 +49,32 @@ function UserMessage(props: { entry: TranscriptEntry }) {
   return (
     <box border={['left']} customBorderChars={SPLIT_BORDER} borderColor={theme().accent}
       backgroundColor={theme().panel} paddingTop={1} paddingBottom={1} paddingLeft={2} flexShrink={0}>
-      <text fg={theme().text}>{props.entry.text}</text>
+      <Show when={props.entry.text.trim()}><text fg={theme().text}>{props.entry.text}</text></Show>
+      <Show when={props.entry.images?.length}><ImageList images={props.entry.images!} /></Show>
     </box>
   );
 }
 
-function AssistantMessage(props: { entry: TranscriptEntry; streaming: boolean; style: SyntaxStyle }) {
+function AssistantMessage(props: { entry: TranscriptEntry; streaming: boolean }) {
   const theme = useTheme();
+  const style = useSyntaxStyle('text');
+  const mutedStyle = useSyntaxStyle('muted');
+  const blocks = createMemo(() => splitFences(props.entry.text.trim()));
+  const isLast = (index: number) => index === blocks().length - 1;
   return (
     <Show when={props.entry.text.trim()}>
       <box paddingLeft={indentFor(props.entry)} flexShrink={0} width="100%">
-        <markdown syntaxStyle={props.style} content={props.entry.text.trim()} streaming={props.streaming}
-          internalBlockMode="top-level" tableOptions={{ style: 'grid', cellPaddingX: 1 }} conceal
-          fg={props.entry.agent ? theme().muted : theme().text} />
+        <Index each={blocks()}>
+          {(block, index) => (
+            <Show when={block().kind === 'code'} fallback={
+              <markdown syntaxStyle={props.entry.agent ? mutedStyle() : style()} content={block().text}
+                streaming={props.streaming && isLast(index)} internalBlockMode="top-level"
+                tableOptions={{ style: 'grid', widthMode: 'content', cellPaddingX: 1 }} conceal fg={props.entry.agent ? theme().muted : theme().text} />
+            }>
+              <CodeBlock code={block().text} language={(block() as { language: string }).language} streaming={props.streaming && isLast(index)} />
+            </Show>
+          )}
+        </Index>
       </box>
     </Show>
   );
@@ -102,6 +117,13 @@ function NoticeMessage(props: { entry: TranscriptEntry }) {
   );
 }
 
+function PermissionMessage(props: { entry: TranscriptEntry }) {
+  return (
+    <PermissionRow permission={props.entry.permission!} toolName={props.entry.toolName ?? props.entry.text}
+      subject={summarizeInput(props.entry.input ?? {})} indent={indentFor(props.entry)} />
+  );
+}
+
 /** Sets sub-agent output apart from the main thread with a dim rule and, on the first entry of a run, the agent name. */
 function AgentFrame(props: { agent?: string; labelled: boolean; children: JSX.Element }) {
   const theme = useTheme();
@@ -115,19 +137,8 @@ function AgentFrame(props: { agent?: string; labelled: boolean; children: JSX.El
   );
 }
 
-export function Transcript(props: { entries: TranscriptEntry[]; busy: boolean; thinking: boolean; details: boolean }) {
-  const renderer = useRenderer();
-  const theme = useTheme();
-  const style = createMemo<SyntaxStyle>(previous => {
-    if (previous) void renderer.idle().then(() => previous.destroy());
-    return SyntaxStyle.fromStyles(markdownStyle(theme(), theme().text), renderer.nativeScene);
-  });
-  const hasAgentText = createMemo(() => props.entries.some(entry => entry.agent && entry.kind === 'assistant'));
-  const mutedStyle = createMemo<SyntaxStyle | undefined>(previous => {
-    if (previous) void renderer.idle().then(() => previous.destroy());
-    return hasAgentText() ? SyntaxStyle.fromStyles(markdownStyle(theme(), theme().muted), renderer.nativeScene) : undefined;
-  });
-  const visible = createMemo(() => props.entries.filter(entry => isRenderable(entry, props.thinking)));
+export function Transcript(props: { entries: TranscriptEntry[]; busy: boolean; thinking: boolean; details: boolean; slots?: TranscriptSlots }) {
+  const visible = createMemo(() => props.entries.filter(entry => isRenderable(entry, props.thinking) && !props.slots?.hide?.(entry)));
   const isStreaming = (entry: TranscriptEntry) => props.busy && entry.id === props.entries[props.entries.length - 1]?.id;
   const startsAgentRun = (entry: TranscriptEntry, index: number) => visible()[index - 1]?.agent !== entry.agent;
   return (
@@ -135,13 +146,15 @@ export function Transcript(props: { entries: TranscriptEntry[]; busy: boolean; t
       {(entry, index) => (
         <box flexShrink={0} marginTop={1} width="100%">
           <AgentFrame agent={entry.agent} labelled={startsAgentRun(entry, index())}>
-            <Switch fallback={<AssistantMessage entry={entry} streaming={isStreaming(entry)} style={(entry.agent && mutedStyle()) || style()} />}>
+            <Switch fallback={<AssistantMessage entry={entry} streaming={isStreaming(entry)} />}>
               <Match when={entry.kind === 'user'}><UserMessage entry={entry} /></Match>
               <Match when={entry.kind === 'thinking'}><ThinkingMessage entry={entry} /></Match>
-              <Match when={entry.kind === 'tool'}><ToolView entry={entry} expanded={props.details} /></Match>
+              <Match when={entry.kind === 'tool'}><ToolView entry={entry} expanded={props.details} taskCard={props.slots?.taskCall} /></Match>
+              <Match when={entry.kind === 'permission'}><PermissionMessage entry={entry} /></Match>
               <Match when={entry.kind === 'error'}><ErrorMessage entry={entry} /></Match>
               <Match when={entry.kind === 'notice'}><NoticeMessage entry={entry} /></Match>
             </Switch>
+            {props.slots?.entryFooter?.(entry)}
           </AgentFrame>
         </box>
       )}

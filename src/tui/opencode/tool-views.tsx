@@ -1,4 +1,8 @@
-import { For, Match, Show, Switch, createMemo } from 'solid-js';
+import { For, Match, Show, Switch, createMemo, createSignal, type JSX } from 'solid-js';
+import { ImageList } from './block-image';
+import { formatBytes, type ImageRef, type PermissionRecord } from './block-model';
+import { useClick } from './block-click';
+import { fetchMeta, sourceLabel, webSources, type WebSource } from './block-web';
 import { DiffView, fileDiffFor } from './diff';
 import { Spinner } from './status';
 import { useTheme } from './theme';
@@ -7,6 +11,7 @@ export type TranscriptEntry = {
   id: string; kind: string; text: string; details?: string; toolName?: string; status?: string; agent?: string;
   input?: Record<string, unknown>; output?: string; isError?: boolean; taskId?: string;
   thinkingTokens?: number; redacted?: boolean; elapsedMs?: number; result?: unknown;
+  permission?: PermissionRecord; images?: ImageRef[];
 };
 
 type Fields = Record<string, unknown>;
@@ -19,6 +24,7 @@ const BASH_TAIL_LINES = 12;
 const SEARCH_PREVIEW_LINES = 5;
 const ERROR_PREVIEW_LINES = 5;
 const PROMPT_PREVIEW_LINES = 12;
+const SOURCE_PREVIEW = 3;
 const MAIN_INDENT = 3;
 const NESTED_INDENT = 1;
 const TASK_TOOLS = new Set(['Agent', 'Task', 'Workflow']);
@@ -83,6 +89,14 @@ export function isFailed(entry: TranscriptEntry): boolean {
   return entry.status === 'error' || entry.isError === true;
 }
 
+export type ToolState = 'running' | 'succeeded' | 'failed';
+
+/** The one state every tool block shows: running until a result arrives, then succeeded or failed. */
+export function toolState(entry: TranscriptEntry): ToolState {
+  if (isFailed(entry)) return 'failed';
+  return entry.status === 'done' ? 'succeeded' : 'running';
+}
+
 export function outputLines(text: string): string[] {
   const trimmed = text.replace(/\s+$/, '');
   return trimmed ? trimmed.split('\n') : [];
@@ -127,6 +141,17 @@ export function exitCodeOf(output: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+function webLabel(name: string, entry: TranscriptEntry): string | undefined {
+  if (name === 'WebSearch') {
+    const count = webSources(toolOutput(entry), entry.result).length;
+    return count ? plural(count, 'source') : undefined;
+  }
+  if (name !== 'WebFetch') return undefined;
+  const { code, codeText, bytes } = fetchMeta(entry.result);
+  const status = code === undefined ? undefined : [code, codeText].filter(Boolean).join(' ');
+  return [status, bytes === undefined ? undefined : formatBytes(bytes)].filter(Boolean).join(' · ') || undefined;
+}
+
 /** Text appended to a tool row: result count, exit status, elapsed time. */
 export function rowSuffix(entry: TranscriptEntry): string {
   const name = toolNameOf(entry);
@@ -134,6 +159,7 @@ export function rowSuffix(entry: TranscriptEntry): string {
   const finished = entry.status === 'done' || isFailed(entry);
   const parts = [
     finished ? resultCount(name, toolInput(entry), output) : undefined,
+    finished ? webLabel(name, entry) : undefined,
     name === 'Bash' && isFailed(entry) ? exitLabel(output) : undefined,
     finished && entry.elapsedMs !== undefined ? formatElapsed(entry.elapsedMs) : undefined,
   ].filter(Boolean);
@@ -145,9 +171,19 @@ function exitLabel(output: string): string | undefined {
   return code === undefined ? undefined : `exit ${code}`;
 }
 
+function todosOf(input: Fields): Fields[] {
+  return Array.isArray(input.todos) ? input.todos.filter((todo): todo is Fields => !!todo && typeof todo === 'object') : [];
+}
+
+/** `2/5 done` for a checklist, so the collapsed row shows progress without the list. */
+export function todoProgress(todos: Fields[]): string {
+  const done = todos.filter(todo => todo.status === 'completed').length;
+  return `${done}/${todos.length} done`;
+}
+
 function rowSummary(entry: TranscriptEntry): string {
   const input = toolInput(entry);
-  if (toolNameOf(entry) === 'TodoWrite' && Array.isArray(input.todos)) return plural(input.todos.length, 'todo');
+  if (toolNameOf(entry) === 'TodoWrite' && Array.isArray(input.todos)) return todoProgress(todosOf(input));
   return summarizeInput(input);
 }
 
@@ -188,8 +224,19 @@ function Checklist(props: { todos: Fields[] }) {
   );
 }
 
-function todosOf(input: Fields): Fields[] {
-  return Array.isArray(input.todos) ? input.todos.filter((todo): todo is Fields => !!todo && typeof todo === 'object') : [];
+
+function Sources(props: { sources: WebSource[]; expanded: boolean }) {
+  const theme = useTheme();
+  const shown = () => props.expanded ? props.sources : props.sources.slice(0, SOURCE_PREVIEW);
+  const hidden = () => props.sources.length - shown().length;
+  return (
+    <box paddingLeft={2} flexShrink={0}>
+      <For each={shown()}>
+        {source => <text fg={theme().muted}>{'• '}<span style={{ fg: theme().secondary }}>{sourceLabel(source)}</span>{source.title ? ' — ' + clip(source.title, GIST_LIMIT) : ''}</text>}
+      </For>
+      <Show when={hidden() > 0}><text fg={theme().muted}>{`… ${plural(hidden(), 'more source')}`}</text></Show>
+    </box>
+  );
 }
 
 function Gist(props: { output: string }) {
@@ -202,6 +249,7 @@ function ToolBody(props: { entry: TranscriptEntry; input: Fields; output: string
   const theme = useTheme();
   const name = () => toolNameOf(props.entry);
   const diff = createMemo(() => EDIT_TOOLS.has(name()) ? fileDiffFor(name(), props.input, props.entry.result) : undefined);
+  const sources = createMemo(() => name() === 'WebSearch' ? webSources(props.output, props.entry.result) : []);
   return (
     <Switch>
       <Match when={isFailed(props.entry)}>
@@ -209,6 +257,9 @@ function ToolBody(props: { entry: TranscriptEntry; input: Fields; output: string
       </Match>
       <Match when={diff()}>{shown => <DiffView diff={shown()} expanded={props.expanded} />}</Match>
       <Match when={name() === 'Bash'}>
+        <Show when={props.expanded && typeof props.input.command === 'string'}>
+          <OutputBlock text={'$ ' + String(props.input.command)} max={0} expanded color={theme().text} />
+        </Show>
         <OutputBlock text={props.output} max={BASH_TAIL_LINES} expanded={props.expanded} tail />
       </Match>
       <Match when={name() === 'Read'}>
@@ -216,6 +267,10 @@ function ToolBody(props: { entry: TranscriptEntry; input: Fields; output: string
       </Match>
       <Match when={name() === 'Grep' || name() === 'Glob'}>
         <OutputBlock text={props.output} max={SEARCH_PREVIEW_LINES} expanded={props.expanded} />
+      </Match>
+      <Match when={name() === 'WebSearch' && sources().length}>
+        <Sources sources={sources()} expanded={props.expanded} />
+        <Show when={props.expanded}><OutputBlock text={props.output} max={0} expanded /></Show>
       </Match>
       <Match when={name() === 'WebFetch' || name() === 'WebSearch'}>
         <Show when={props.expanded} fallback={<Gist output={props.output} />}><OutputBlock text={props.output} max={0} expanded /></Show>
@@ -230,10 +285,10 @@ function ToolBody(props: { entry: TranscriptEntry; input: Fields; output: string
 
 function StatusGlyph(props: { entry: TranscriptEntry }) {
   const theme = useTheme();
-  const finished = () => props.entry.status === 'done' || isFailed(props.entry);
+  const state = () => toolState(props.entry);
   return (
-    <Show when={finished()} fallback={<Spinner color={theme().warning} />}>
-      <text fg={isFailed(props.entry) ? theme().error : theme().success}>{isFailed(props.entry) ? '✗' : '✓'}</text>
+    <Show when={state() !== 'running'} fallback={<Spinner color={theme().warning} />}>
+      <text fg={state() === 'failed' ? theme().error : theme().success}>{state() === 'failed' ? '✗' : '✓'}</text>
     </Show>
   );
 }
@@ -271,18 +326,21 @@ export function TaskCallCard(props: { entry: TranscriptEntry; expanded?: boolean
 }
 
 /** Compact tool row (icon, name, summary) with the tool specific result view beneath it. */
-export function ToolView(props: { entry: TranscriptEntry; expanded: boolean }) {
+export function ToolView(props: { entry: TranscriptEntry; expanded: boolean; taskCard?: (entry: TranscriptEntry) => JSX.Element | undefined }) {
   const theme = useTheme();
   const input = createMemo(() => toolInput(props.entry));
   const output = createMemo(() => toolOutput(props.entry));
   const name = () => toolNameOf(props.entry);
-  const failed = () => isFailed(props.entry);
-  const finished = () => props.entry.status === 'done' || failed();
+  const state = () => toolState(props.entry);
+  const failed = () => state() === 'failed';
+  const [chosen, choose] = createSignal<boolean>();
+  const expanded = () => chosen() ?? props.expanded;
+  const toggle = useClick(() => { if (!EDIT_TOOLS.has(name())) choose(!expanded()); });
   return (
-    <Show when={!isTaskCall(props.entry)} fallback={<TaskCallCard entry={props.entry} expanded={props.expanded} />}>
+    <Show when={!isTaskCall(props.entry)} fallback={props.taskCard?.(props.entry) ?? <TaskCallCard entry={props.entry} expanded={props.expanded} />}>
       <box paddingLeft={indentFor(props.entry)} flexShrink={0}>
-        <box flexDirection="row" gap={1}>
-          <Show when={finished()} fallback={<Spinner color={theme().warning} />}>
+        <box flexDirection="row" gap={1} onMouseUp={toggle}>
+          <Show when={state() !== 'running'} fallback={<Spinner color={theme().warning} />}>
             <text fg={failed() ? theme().error : theme().accent}>{failed() ? '✗' : TOOL_ICONS[name()] ?? DEFAULT_TOOL_ICON}</text>
           </Show>
           <text fg={theme().muted}>
@@ -290,7 +348,8 @@ export function ToolView(props: { entry: TranscriptEntry; expanded: boolean }) {
             {(rowSummary(props.entry) ? ' ' + rowSummary(props.entry) : '') + rowSuffix(props.entry)}
           </text>
         </box>
-        <ToolBody entry={props.entry} input={input()} output={output()} expanded={props.expanded} />
+        <ToolBody entry={props.entry} input={input()} output={output()} expanded={expanded()} />
+        <Show when={props.entry.images?.length}><ImageList images={props.entry.images!} /></Show>
       </box>
     </Show>
   );

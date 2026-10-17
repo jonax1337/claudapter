@@ -1,10 +1,11 @@
 // Graphical context window panel; dialog structure adapted from the usage panel (OpenCode UI, MIT).
-import { For, Show, createMemo, createSignal, type JSX } from 'solid-js';
+import { For, Show, createMemo, type JSX } from 'solid-js';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard } from '@opentui/solid';
 import { Dialog, KeyHints, useDialogBodyLimit, type KeyHint } from './dialog';
-import { formatTokens, providerColor } from './status';
-import { useTheme, type Theme } from './theme';
+import { usePagedRows } from './paged-rows';
+import { formatTokens, meterCells } from './status';
+import { providerColor, useTheme, type Theme } from './theme';
 
 /** Catalog entry of the selected model; the UI never imports controller types. */
 export interface ContextModelView {
@@ -45,35 +46,22 @@ export interface ContextPanelProps {
 export function ContextPanel(props: ContextPanelProps) {
   const theme = useTheme();
   const bodyLimit = useDialogBodyLimit();
-  const [offset, setOffset] = createSignal(0);
   const rows = createMemo(() => contextRows(props.usage, props.model, theme()));
-  const height = () => Math.max(1, bodyLimit() - 2);
-  const clamp = (next: number) => Math.max(0, Math.min(next, Math.max(0, rows().length - height())));
+  const paged = usePagedRows(rows, () => Math.max(1, bodyLimit() - 2));
 
   useKeyboard(event => {
     if (event.ctrl || event.meta) return;
-    const actions: Record<string, () => void> = {
-      up: () => setOffset(value => clamp(value - 1)),
-      down: () => setOffset(value => clamp(value + 1)),
-      pageup: () => setOffset(value => clamp(value - height())),
-      pagedown: () => setOffset(value => clamp(value + height())),
-      home: () => setOffset(0),
-      end: () => setOffset(clamp(rows().length)),
-      escape: props.onClose,
-    };
-    const action = actions[event.name];
-    if (action) { event.preventDefault(); action(); }
+    if (event.name === 'escape') props.onClose();
+    else if (!paged.handleKey(event.name)) return;
+    event.preventDefault();
   });
 
-  const visible = () => rows().slice(offset(), offset() + height());
   return (
     <Dialog title="Context" size="large" footer={<KeyHints hints={HINTS} />} onBackdrop={props.onClose}>
       <box marginTop={1} flexShrink={0}>
-        <For each={visible()}>{row => row}</For>
+        <For each={paged.visible()}>{row => row}</For>
       </box>
-      <Show when={rows().length > height()}>
-        <text fg={theme().muted} wrapMode="none">{(offset() + 1) + '–' + (offset() + height()) + ' of ' + rows().length}</text>
-      </Show>
+      <Show when={paged.rangeLabel()}><text fg={theme().muted} wrapMode="none">{paged.rangeLabel()}</text></Show>
     </Dialog>
   );
 }
@@ -100,14 +88,14 @@ function contextRows(usage: ContextUsageView | undefined, model: ContextModelVie
 
 function windowMeter(usage: ContextUsageView, theme: Theme) {
   if (!usage.maxTokens) return [muted(theme, 'Used tokens unknown')];
-  const ratio = Math.min(1, usage.totalTokens / usage.maxTokens);
-  const filled = Math.round(ratio * BAR_CELLS);
+  const ratio = usage.totalTokens / usage.maxTokens;
+  const cells = meterCells(ratio, BAR_CELLS);
   const color = ratio >= DANGER_RATIO ? theme.error : ratio >= WARNING_RATIO ? theme.warning : theme.accent;
   const percent = Math.round(ratio * 100);
   return [
     <text wrapMode="none">
-      <span style={{ fg: color }}>{'━'.repeat(filled)}</span>
-      <span style={{ fg: theme.border }}>{'━'.repeat(BAR_CELLS - filled)}</span>
+      <span style={{ fg: color }}>{cells.filled}</span>
+      <span style={{ fg: theme.border }}>{cells.empty}</span>
       <span style={{ fg: color }}>{' ' + percent + '%'}</span>
     </text>,
     ...(ratio > 1 ? [<text fg={theme.error} wrapMode="none">Context exceeds the active window. Compact before continuing.</text>] : []),

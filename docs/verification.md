@@ -147,6 +147,78 @@ or remote CI execution occurred.
 - Real isolated 2.1.302 query initialization and settings/hooks/permissions/memory/
   skills/status/sandbox/plan/Chrome-status readers succeeded. Browser listing
   correctly refused a disconnected session. No inference or login was requested.
+
+## TUI parity push: transcript, fallback, sub-agents, polish — 2026-10-17 (fifth session)
+
+- Five parallel workstreams extended the OpenCode TUI: transcript block tools,
+  native-parity panels, fallback UX, sub-agent isolation and visual polish.
+  Everything below is fixture, mock or isolated-unit evidence; no live engine
+  turn ran in this session.
+- Transcript: edit/write/multi-edit diff blocks (native `<diff>`, tree-sitter
+  styles, side-by-side from 120 columns, collapsed at 40 rows), Bash exit codes
+  with expandable output, Read/Grep/Glob rows, WebSearch/WebFetch sources,
+  TodoWrite checklist, recorded permission rows keyed by request id, image rows
+  (open/copy, 8 MiB retention cap), fenced code with copy, tables and CJK
+  wrapping. 61 transcript tests.
+- Native parity: `/btw` via the private SDK control request (version-pinned,
+  signal-only options); `/cd` validates settings, relocates and re-trusts —
+  exercised against real CLI 2.1.302 with a fixture home and unreachable model
+  endpoint (refusal, trust challenge, relocation, same-directory no-op); Vim
+  mode (motions, counts, operators, text objects, visual, `.`, undo) with kill
+  ring and paste handling; `/account` `/privacy` `/upgrade` (https allowlist,
+  confirm before open, shell-less spawn); `/keymap` `/tutorial`; honest
+  native-only dialogs. Checkpoint "summarize" is an approximation
+  (whole-conversation `/compact`); no successful `/btw` answer was observed.
+  Triage in `docs/parity-plan.md`.
+- Fallback: `RouteNotice` schema (switched/recovered/exhausted/interrupted/
+  unprotected) with per-agent scope; notices contain no tokens, prompt bodies
+  or upstream error text (test-enforced); coalesced toast, per-turn markers and
+  badges, status-bar countdown; alt+r/b/p/f recovery is user-initiated only;
+  guided setup builds presets from signed-in models with capability warnings
+  and a dry run. Replay after output stays blocked (gateway test asserts
+  exactly one upstream request). Gateway 34/34, route-model 12, presets 4,
+  route-views 6.
+- Sub-agents: `parent_tool_use_id` frames partition into per-agent
+  `LiveTranscript` streams (stream_event adoption, nested agents,
+  resume-filtered history); a regression test proves no sub-agent text,
+  thinking or tool use reaches the main transcript; summary row, tab strip,
+  Alt+arrow/digit navigation, `/agent`, Ctrl+T `o` and click; the SendMessage
+  relay surfaces the engine's own outcome; `stopTask` is independent; Ctrl+B
+  backgrounds a foreground agent. `bridge.ts` reconciles per row: 200 streamed
+  updates at 2,000 entries took 27 ms versus 670 ms before. 46 agent/controller
+  node tests.
+- Polish and layout: six themes with WCAG-checked token pairs including
+  256-colour degradation; `NO_COLOR` greyscale and 16-colour fallback; provider
+  colours; shared motion timers with `CLAUDAPTER_REDUCED_MOTION`; fuzzy-match
+  highlighting; home provider chips and recent sessions with fixed heights;
+  `?` overlay; layered Esc. Cell-width helpers (`layout.ts`: string-width,
+  grapheme-safe truncate/pad) carry regression tests (CJK, emoji, ZWJ,
+  surrogate safety, composed rows).
+- Integrated results after all changes: `npm run check` 0 errors; `npm test`
+  **254 passed, 0 failed, 5 skipped** of 259 (one skip is the
+  `CLAUDAPTER_NATIVE_TEST`-gated admin test; new: image-cleanup and steer-auth
+  tests); `npm run test:tui` **204 passed, 0 failed across 10 files** (the
+  script now lists every bun suite). The Vim Esc layering (insert/visual Esc
+  never interrupts a busy turn) has App-level regression tests.
+- Read-only security review (2026-10-17, model-assisted, evidence per file
+  and line) found no high or critical issues; route notices leak no tokens,
+  bodies or upstream text, replay stays blocked by scope and body-fingerprint
+  guards, fallback stays opt-in, the external-link allowlist and /cd trust
+  flow held up. Its three findings were fixed and tested: saved image temp
+  directories are now tracked and removed on controller close
+  (`cleanupSavedImages`, node test); the gateway's interrupted fingerprint set
+  is capped at 4096; `steer()` and `updateFallback` refuse targets that are
+  not signed in, mirroring the preset message. An integration review agent
+  was lost to repeated upstream API errors after covering the controller and
+  agent-stream areas; the coordinator re-verified the bridge assumption
+  (entry objects are replaced on change; only streamed text is appended in
+  place; per-agent revision bumping) across all mutation paths without
+  finding a break. The Esc/Alt-key ordering questions remain on the live
+  acceptance list.
+- Not verified live: a real fallback or quota event in the TUI, agent relay
+  delivery and resume, a successful `/btw` answer, Alt-key chords in Windows
+  Terminal, themes/colours/`NO_COLOR` in a real terminal, resize during a busy
+  turn, and the packed artifact.
 - All 16 admin tests passed with native writer testing enabled, using disposable
   homes. The native writer test uses a fixture query and the actual CLI writer;
   this is not live OAuth or every native-dialog end-to-end acceptance.

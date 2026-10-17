@@ -46,7 +46,8 @@ export function WorkspaceDiffPanel(props: WorkspaceDiffPanelProps) {
     <Dialog title={chosen() ? truncate(chosen()!.path, contentWidth() - 8) : (props.data.staged ? 'Staged changes' : 'Workspace changes')}
       size="large" footer={<KeyHints hints={chosen() ? DETAIL_HINTS : LIST_HINTS} />} onBackdrop={props.onClose}>
       <Show when={chosen()} keyed fallback={<FileList files={files()} untracked={props.data.untracked} truncated={props.data.truncated}
-        totals={totals()} selected={selected()} width={contentWidth()} onPick={index => { setSelected(index); setOpen(files()[index]?.path); }} />}>
+        totals={totals()} selected={selected()} width={contentWidth()} onHover={setSelected}
+        onPick={index => { setSelected(index); setOpen(files()[index]?.path); }} />}>
         {file => <DiffView diff={file} expanded={expanded()} />}
       </Show>
     </Dialog>
@@ -54,7 +55,7 @@ export function WorkspaceDiffPanel(props: WorkspaceDiffPanelProps) {
 }
 
 function FileList(props: { files: FileDiff[]; untracked: string[]; truncated: boolean; totals: { added: number; removed: number };
-  selected: number; width: number; onPick(index: number): void }) {
+  selected: number; width: number; onHover(index: number): void; onPick(index: number): void }) {
   const theme = useTheme();
   const bodyLimit = useDialogBodyLimit();
   const height = () => Math.max(1, bodyLimit() - 6 - props.untracked.length);
@@ -68,13 +69,13 @@ function FileList(props: { files: FileDiff[]; untracked: string[]; truncated: bo
       </text>
       <box marginTop={1}>
         <For each={props.files.slice(0, height())}>{(file, index) =>
-          <box height={1} flexShrink={0} backgroundColor={index() === props.selected ? theme().accent : undefined}
-            onMouseMove={() => index()} onMouseUp={() => props.onPick(index())}>
+          <box height={1} flexShrink={0} backgroundColor={index() === props.selected ? theme().selection : undefined}
+            onMouseMove={() => props.onHover(index())} onMouseUp={() => props.onPick(index())}>
             <text wrapMode="none">
-              <span style={{ fg: index() === props.selected ? theme().background : theme().muted }}>{truncate(file.path, props.width - 14) + '  '}</span>
-              <span style={{ fg: index() === props.selected ? theme().background : theme().success }}>{file.added ? '+' + file.added : '  '}</span>
+              <span style={{ fg: index() === props.selected ? theme().selectionText : theme().text }}>{truncate(file.path, props.width - 14) + '  '}</span>
+              <span style={{ fg: index() === props.selected ? theme().selectionText : theme().success }}>{file.added ? '+' + file.added : '  '}</span>
               {' '}
-              <span style={{ fg: index() === props.selected ? theme().background : theme().error }}>{file.removed ? '-' + file.removed : '  '}</span>
+              <span style={{ fg: index() === props.selected ? theme().selectionText : theme().error }}>{file.removed ? '-' + file.removed : '  '}</span>
             </text>
           </box>
         }</For>

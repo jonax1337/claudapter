@@ -1,7 +1,7 @@
 import { createComponent, type JSX } from 'solid-js';
 import { forkSession, renameSession } from '@anthropic-ai/claude-agent-sdk';
 import type { TuiController } from '../../../dist/tui/controller.js';
-import { adminActions, adminSnapshot, runAdminAction, type AdminKind } from '../../../dist/tui/admin.js';
+import { adminActions, adminSnapshot, runAdminAction, type AdminContext, type AdminKind } from '../../../dist/tui/admin.js';
 import { invokeCompat } from '../../../dist/tui/compat.js';
 import { loadPreferences, savePreferences, type Preferences } from '../../../dist/tui/preferences.js';
 import { copyText } from '../../../dist/tui/clipboard.js';
@@ -10,12 +10,16 @@ import type { CommandInfo } from './composer';
 import type { Decision } from './decision';
 import type { MenuItem } from './menu';
 import { THEME_NAMES } from './theme';
+import { themeMenuItems } from './theme-menu';
 import { commandGroup, keyHint, sortPaletteItems, SKILLS_GROUP } from './palette';
 import { ProgressDialog, SessionPicker, type SessionPickerActions } from './sessions';
 import { UsagePanel } from './usage-view';
 import { ContextPanel } from './context-view';
 import { WorkspaceDiffPanel } from './workspace-diff';
 import { SettingsPanel, type SettingsGroup } from './settings';
+import { createRouteCommand, openFallbackSetup } from './route-actions';
+import type { BrowserOpener } from '../../../dist/tui/external-link.js';
+import { registerParityCommands, summarizeFromCheckpointItem } from './parity-actions';
 import { latestOtherSession, relativeTime, resolveSession, sessionGroup, sessionTitle, type SessionInfo } from './sessions-model';
 
 export interface CommandSet {
@@ -34,6 +38,8 @@ export interface ActionDialogs {
   toggle(kind:'thinking'|'details'):void;
   /** Opens the background task panel; without it `/tasks` falls back to a menu. */
   tasks?():void;
+  /** Lists main and every sub-agent view to switch to; without it `/agent` is unavailable. */
+  agents?():void;
   /** Shows a custom dialog; `render` receives the function that dismisses it. */
   panel?(render:(close:()=>void)=>JSX.Element):void;
   /** Renders structured data graphically; without it `/mcp` & co fall back to the JSON view. */
@@ -57,9 +63,14 @@ const PERMISSION_MODES = [
   {mode:'plan',description:'Plan first, change nothing'},
 ];
 const EFFORT_LEVELS = ['low','medium','high','xhigh','max'];
-const ARGUMENT_COMMANDS = new Set(['/model','/resume','/sessions','/rename','/export','/theme','/mode','/effort','/attach','/add-dir']);
+const ARGUMENT_COMMANDS = new Set(['/model','/resume','/sessions','/rename','/export','/theme','/mode','/effort','/attach','/add-dir','/btw','/cd','/route']);
 
-export function createActions(controller:TuiController, dialogs:ActionDialogs, exit:()=>Promise<void>):CommandSet {
+export interface ActionOptions {
+  /** Replaces the system browser used by account pages, for tests. */
+  openBrowser?:BrowserOpener;
+}
+
+export function createActions(controller:TuiController, dialogs:ActionDialogs, exit:()=>Promise<void>, options:ActionOptions={}):CommandSet {
   let attachments: Awaited<ReturnType<TuiController['attach']>>[] = [];
   const commands = new Map<string,Command>();
   const register = (name:string,description:string,run:(argument:string)=>void|Promise<void>) =>
@@ -114,6 +125,7 @@ export function createActions(controller:TuiController, dialogs:ActionDialogs, e
         {title:'Restore files',run:()=>dialogs.confirm('Restore files?',JSON.stringify(preview),async()=>{const result=await liveQuery().rewindFiles(entry.id);if(!result.canRewind)throw new Error(result.error??'Cannot rewind files.');dialogs.close();})},
         {title:'Branch conversation',run:()=>dialogs.confirm('Branch conversation?',entry.text,async()=>{await controller.branchAt(entry.id);dialogs.close();})},
         {title:'Restore and branch',run:()=>dialogs.confirm('Restore and branch?',JSON.stringify(preview),async()=>{await controller.branchAt(entry.id,true);dialogs.close();})},
+        summarizeFromCheckpointItem({controller,dialogs},entry.text),
       ]);
     }})));
   }
@@ -134,6 +146,7 @@ export function createActions(controller:TuiController, dialogs:ActionDialogs, e
     return [
       {title:'Defaults',entries:settingsEntries()},
       {title:'Fallback rules',entries:[
+        {label:'Guided setup',value:'presets from signed-in models',run:()=>openFallbackSetup(controller,dialogs)},
         ...controller.config.fallback.map((rule,index)=>({label:rule.from+' → '+rule.targets.join(', '),
           value:(rule.enabled?'enabled':'disabled')+' · '+rule.scopes.join(', '),run:()=>ruleMenu(index)})),
         {label:'New fallback rule',value:controller.config.fallback.length+' existing',run:()=>editFallbackRule()},
@@ -238,7 +251,11 @@ export function createActions(controller:TuiController, dialogs:ActionDialogs, e
     await resumeWithProgress(latestOtherSession(await controller.sessions(),controller.state.sessionId));
   }
 
-  register('/theme','Change the color theme',argument=>argument?applyTheme(argument):dialogs.menu('Appearance',THEME_NAMES.map(theme=>({title:theme,run:()=>applyTheme(theme)}))));
+  register('/theme','Change the color theme',async argument=>{
+    if(argument)return applyTheme(argument);
+    const {theme}=await loadPreferences();
+    dialogs.menu('Appearance',themeMenuItems({active:theme,preview:name=>dialogs.appearance(name),apply:applyTheme}));
+  });
   register('/thinking','Show or hide model reasoning',async()=>{const prefs=await loadPreferences();await savePreferences({...prefs,thinking:!prefs.thinking});dialogs.toggle('thinking');});
   register('/details','Expand or collapse tool output',()=>dialogs.toggle('details'));
   register('/history','Recall an earlier prompt',()=>dialogs.menu('Prompt history',[...controller.state.entries].reverse().filter(entry=>entry.kind==='user').map(entry=>({title:entry.text.slice(0,100),run:()=>{dialogs.recall(entry.text);dialogs.close();}}))));
@@ -267,6 +284,7 @@ export function createActions(controller:TuiController, dialogs:ActionDialogs, e
     else dialogs.form('Export transcript','Create a new file; never overwrite.',[{key:'path',label:'Path',required:true}],fields=>exportTo(fields.path));
   });
   register('/tasks','Inspect background tasks',openTasksMenu);
+  register('/agent','Switch between the main conversation and sub-agent views',()=>{if(!dialogs.agents)throw new Error('Agent views are unavailable here.');dialogs.agents();});
   register('/mode','Show or cycle the permission mode',showOrCyclePermissionMode);
   register('/favorite','Pin or unpin favorite models',()=>dialogs.menu('Model favorites',controller.state.models.map(model=>({title:model.label,run:async()=>{const prefs=await loadPreferences();await savePreferences({...prefs,favorites:prefs.favorites.includes(model.id)?prefs.favorites.filter(id=>id!==model.id):[...prefs.favorites,model.id]});dialogs.close();}}))));
   register('/rewind','Restore files or branch at a checkpoint',openRewindMenu);
@@ -305,6 +323,7 @@ export function createActions(controller:TuiController, dialogs:ActionDialogs, e
     ]);
   });
   register('/fallback','Inspect or edit fallback rules',()=>openSettings());
+  register('/route','Fallback route: retry, switch back, pin or set up',createRouteCommand(controller,dialogs));
   register('/settings','Default model, per-model effort and fallback rules',()=>openSettings());
   register('/setup','Default model, per-model effort and fallback rules',()=>openSettings());
   register('/exit','Quit Claudapter',exit);
@@ -314,6 +333,8 @@ export function createActions(controller:TuiController, dialogs:ActionDialogs, e
     {title:'Inspect',run:async()=>show('Shortcuts',(await loadPreferences()).keybindings)},
     {title:'Bind shortcut',run:()=>dialogs.form('Bind shortcut','Reserved approval and interrupt keys remain protected.',[{key:'chord',label:'Chord',required:true},{key:'command',label:'Slash command',required:true}],async fields=>{const prefs=await loadPreferences();await savePreferences({...prefs,keybindings:{...prefs.keybindings,[fields.chord]:fields.command}});dialogs.view('Shortcut saved','Restart the TUI to load changed shortcuts.');})},
   ]));
+
+  registerParityCommands(register,{controller,dialogs,liveQuery,show,adminContext,openBrowser:options.openBrowser});
 
   function nativeCommands():NativeCommand[] {
     return controller.state.commands.filter(command=>!commands.has('/'+command.name));
@@ -335,10 +356,13 @@ export function createActions(controller:TuiController, dialogs:ActionDialogs, e
     dialogs.close();
   }
 
-  function administration(kind:AdminKind) {
+  function adminContext():AdminContext {
     if(!controller.query)throw new Error('Session is not ready.');
-    const context={query:controller.query,cwd:controller.cwd,claudePath:controller.claudePath,
+    return {query:controller.query,cwd:controller.cwd,claudePath:controller.claudePath,
       initialSettings:controller.session?.settingsObject,onOutput:(text:string)=>controller.notice(text)};
+  }
+  function administration(kind:AdminKind) {
+    const context=adminContext();
     dialogs.menu(kind.toUpperCase(),[
       {title:'Inspect '+kind,run:async()=>show(kind,await adminSnapshot(kind,context))},
       ...adminActions[kind].map(action=>({title:action.label,description:action.description,run:()=>{

@@ -1,6 +1,6 @@
 {
   "name": "claudapter",
-  "version": "0.2.0-rc.3",
+  "version": "0.2.0-rc.4",
   "description": "Your Claude Code. Your choice of models.",
   "type": "module",
   "license": "MIT",
@@ -21,7 +21,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.opencode.json && bun scripts/build-tui.mjs",
     "tui:preview": "npm run build && bun --preload @opentui/solid/preload src/tui/opencode/main.tsx",
-    "test:tui": "bun test --preload @opentui/solid/preload ./test/opencode-home.test.tsx ./test/opencode-picker.test.tsx ./test/opencode-transcript.test.tsx",
+    "test:tui": "bun test --preload @opentui/solid/preload ./test/opencode-home.test.tsx ./test/opencode-picker.test.tsx ./test/opencode-transcript.test.tsx ./test/opencode-theme.test.ts ./test/opencode-layout.test.ts ./test/agent-views.test.tsx ./test/agent-bridge.test.ts ./test/composer-vim.test.tsx ./test/parity-panels.test.tsx ./test/route-views.test.tsx",
     "test": "npm run build && node --import ./test/isolate.mjs --test test/*.test.mjs",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.opencode.json",
     "prepack": "npm run build"

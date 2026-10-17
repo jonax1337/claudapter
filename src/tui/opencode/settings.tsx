@@ -3,7 +3,7 @@ import { TextAttributes } from '@opentui/core';
 import { For, Show, createMemo, createSignal } from 'solid-js';
 import { useKeyboard } from '@opentui/solid';
 import { Dialog, KeyHints, useDialogBodyLimit, useDialogContentWidth, type KeyHint } from './dialog';
-import { truncate } from './layout';
+import { padToWidth, truncate } from './layout';
 import { useTheme } from './theme';
 
 /** One actionable configuration row; the label carries the setting, the value its current state. */
@@ -18,6 +18,7 @@ export interface SettingsGroup { title: string; entries: SettingsEntry[] }
 type Row = { header: string; key: string } | { entry: SettingsEntry; key: string };
 
 const HINTS: KeyHint[] = [['↑↓', 'select'], ['enter', 'change'], ['esc', 'close']];
+const ROW_PADDING = 1;
 
 export interface SettingsPanelProps {
   groups: SettingsGroup[];
@@ -59,7 +60,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
         <For each={rows()}>{(row, index) => isEntry(row)
           ? <SettingRow entry={row.entry} selected={index() === selected()} width={contentWidth()}
               onHover={() => setSelected(index())} onRun={row.entry.run} />
-          : <text fg={theme().muted} attributes={TextAttributes.BOLD} wrapMode="none">{row.header.toUpperCase()}</text>}
+          : <text fg={theme().muted} attributes={TextAttributes.BOLD} wrapMode="none" marginTop={index() ? 1 : 0}>{row.header.toUpperCase()}</text>}
         </For>
       </box>
       <Show when={rows().length > bodyLimit() - 4}>
@@ -71,12 +72,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
 function SettingRow(props: { entry: SettingsEntry; selected: boolean; width: number; onHover(): void; onRun(): void }) {
   const theme = useTheme();
+  const labelWidth = () => Math.floor(props.width / 2) - 2;
   return (
-    <box height={1} flexShrink={0} backgroundColor={props.selected ? theme().accent : undefined}
-      onMouseMove={props.onHover} onMouseUp={props.onRun}>
-      <text wrapMode="none">
-        <span style={{ fg: props.selected ? theme().background : theme().text }}>{truncate(props.entry.label, Math.floor(props.width / 2) - 2) + '  '}</span>
-        <span style={{ fg: props.selected ? theme().background : theme().muted }}>{truncate(props.entry.value ?? '', Math.ceil(props.width / 2))}</span>
+    <box height={1} flexShrink={0} paddingLeft={ROW_PADDING} paddingRight={ROW_PADDING}
+      backgroundColor={props.selected ? theme().selection : undefined} onMouseMove={props.onHover} onMouseUp={props.onRun}>
+      <text wrapMode="none" attributes={props.selected ? TextAttributes.BOLD : undefined}>
+        <span style={{ fg: props.selected ? theme().selectionText : theme().text }}>{padToWidth(truncate(props.entry.label, labelWidth()), labelWidth() + 2)}</span>
+        <span style={{ fg: props.selected ? theme().selectionText : theme().muted }}>{truncate(props.entry.value ?? '', props.width - labelWidth() - 2 - ROW_PADDING * 2)}</span>
       </text>
     </box>
   );

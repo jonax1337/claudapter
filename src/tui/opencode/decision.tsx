@@ -166,9 +166,9 @@ export function DecisionDialog(props: { decision: Decision; onAnswer(value: unkn
         <For each={choices}>
           {(choice, index) => {
             const selected = () => index() === active() && field() < 0;
-            return <box paddingLeft={1} paddingRight={1} flexShrink={0} backgroundColor={selected() ? theme().accent : theme().element}
+            return <box paddingLeft={1} paddingRight={1} flexShrink={0} backgroundColor={selected() ? theme().selection : theme().element}
               onMouseUp={() => choose(index())}>
-              <text fg={selected() ? theme().background : theme().text} attributes={selected() ? TextAttributes.BOLD : undefined}
+              <text fg={selected() ? theme().selectionText : theme().text} attributes={selected() ? TextAttributes.BOLD : undefined}
                 wrapMode="none">{choice.label}</text>
             </box>;
           }}

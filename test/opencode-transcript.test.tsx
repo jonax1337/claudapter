@@ -1,8 +1,16 @@
 import { describe, test, expect } from 'bun:test';
 import { testRender } from '@opentui/solid';
-import { Transcript, isRenderable, type TranscriptEntry } from '../src/tui/opencode/transcript';
-import { countChanges, fileDiffFor, lineDiff, numberRows, patchRows, splitLines, trimContext, unifiedDiff, visibleRows } from '../src/tui/opencode/diff';
-import { exitCodeOf, formatElapsed, headLines, rowSuffix, tailLines, toolInput, toolOutput } from '../src/tui/opencode/tool-views';
+import { Transcript, isRenderable, type TranscriptEntry, type TranscriptSlots } from '../src/tui/opencode/transcript';
+import { SPLIT_MIN_WIDTH, countChanges, fileDiffFor, lineDiff, numberRows, patchRows, splitLines, toUnifiedPatch, trimContext, unifiedDiff, visibleRows } from '../src/tui/opencode/diff';
+import { exitCodeOf, formatElapsed, headLines, rowSuffix, tailLines, todoProgress, toolInput, toolOutput, toolState } from '../src/tui/opencode/tool-views';
+import { formatBytes, imageLabel, permissionDetails, permissionLine, type PermissionRecord } from '../src/tui/opencode/block-model';
+import { fetchMeta, sourceLabel, webSources } from '../src/tui/opencode/block-web';
+import { ImageList, type ImageActions } from '../src/tui/opencode/block-image';
+import { CodeBlock } from '../src/tui/opencode/block-code';
+import { splitFences } from '../src/tui/opencode/markdown-blocks';
+import { copyImageCommand, imageExtension, openImageCommand } from '../src/tui/opencode/clipboard-image';
+import { IMAGE_DATA_LIMIT, describeImageBlock, imageBlocks, imageDimensions } from '../src/tui/image-info';
+import { historyEntries, permissionEntry, permissionOutcome, suggestionRules, toolResultEntry } from '../src/tui/transcript-model';
 
 const FRAME_WAIT_MS = 2000;
 
@@ -363,5 +371,457 @@ describe('unified workspace diff', () => {
     expect(one.rows.map(row => [row.kind, row.lineNumber])).toEqual([
       ['context', 2], ['remove', 3], ['add', 3], ['add', 4],
     ]);
+  });
+});
+
+const THEME_FREE_WIDTH = 100;
+
+function locate(frame: string, text: string) {
+  const rows = frame.split('\n');
+  const y = rows.findIndex(row => row.includes(text));
+  return { x: rows[y]?.indexOf(text) ?? -1, y };
+}
+
+async function clickText(view: Awaited<ReturnType<typeof testRender>>, text: string) {
+  const { x, y } = locate(view.captureCharFrame(), text);
+  expect(y).toBeGreaterThanOrEqual(0);
+  view.renderer.clearSelection();
+  await view.mockMouse.click(x + 1, y);
+  await view.renderOnce();
+}
+
+async function renderWith(entries: TranscriptEntry[], slots: TranscriptSlots | undefined, options: { width?: number; height?: number } = {}) {
+  const view = await testRender(() => (
+    <box width="100%" height="100%" flexDirection="column">
+      <Transcript entries={entries} busy={false} thinking={false} details={false} slots={slots} />
+    </box>
+  ), { width: options.width ?? THEME_FREE_WIDTH, height: options.height ?? 40 });
+  await view.renderOnce();
+  return view;
+}
+
+function pngHeader(width: number, height: number) {
+  const bytes = Buffer.alloc(33);
+  Buffer.from('89504e470d0a1a0a', 'hex').copy(bytes);
+  bytes.writeUInt32BE(13, 8);
+  bytes.write('IHDR', 12, 'latin1');
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  return bytes;
+}
+
+const imageBlock = (bytes: Buffer, mediaType = 'image/png') => ({ type: 'image', source: { type: 'base64', media_type: mediaType, data: bytes.toString('base64') } });
+
+describe('unified patch for the native diff renderer', () => {
+  test('hunk headers carry both line positions and gaps start a new hunk', () => {
+    const rows = patchRows([
+      { oldStart: 7, oldLines: 3, newStart: 7, newLines: 3, lines: [' keep', '-old', '+new', ' tail'] },
+      { oldStart: 40, oldLines: 1, newStart: 40, newLines: 2, lines: [' x', '+y'] },
+    ]);
+    expect(toUnifiedPatch('a.ts', rows).split('\n')).toEqual([
+      '--- a/a.ts', '+++ b/a.ts', '@@ -7,3 +7,3 @@', ' keep', '-old', '+new', ' tail', '@@ -40,1 +40,2 @@', ' x', '+y',
+    ]);
+  });
+
+  test('pure additions start at line zero on the old side; unnumbered rows fall back to line one', () => {
+    const write = fileDiffFor('Write', { file_path: 'w.ts', content: 'a\nb' })!;
+    expect(toUnifiedPatch('w.ts', write.rows)).toContain('@@ -0,0 +1,2 @@');
+    const edit = fileDiffFor('Edit', { file_path: 'e.ts', old_string: 'a', new_string: 'b' })!;
+    expect(toUnifiedPatch('e.ts', edit.rows)).toContain('@@ -1,1 +1,1 @@');
+    expect(edit.rows.every(row => row.lineNumber === undefined)).toBe(true);
+  });
+
+  test('rows keep their positions on each side and tabs become spaces', () => {
+    const rows = numberRows(lineDiff('a\nb', 'a\nc'), 10, 20);
+    expect(rows.map(row => [row.oldLine, row.newLine])).toEqual([[10, 20], [11, undefined], [undefined, 21]]);
+    expect(toUnifiedPatch('t', [{ kind: 'add', text: '\tx' }])).toContain('+  x');
+    const [file] = unifiedDiff('--- a/f\n+++ b/f\n@@ -3,1 +3,1 @@\n-a\n+b');
+    expect(file.rows.map(row => [row.oldLine, row.newLine])).toEqual([[3, undefined], [undefined, 3]]);
+  });
+});
+
+describe('diff block rendering', () => {
+  const entry = tool('Edit', { file_path: 'src/a.ts', old_string: 'x', new_string: 'y' },
+    { result: { structuredPatch: [{ oldStart: 7, oldLines: 2, newStart: 7, newLines: 2, lines: [' export {};', '-const a = 1;', '+const a = 2;'] }] } });
+
+  test('narrow terminals stack the sides, wide terminals show them side by side', async () => {
+    const narrow = await renderEntries([entry], { width: 100 });
+    try {
+      const frame = await frameContaining(narrow, 'const a = 2;');
+      expect(locate(frame, 'const a = 1;').y).not.toBe(locate(frame, 'const a = 2;').y);
+    } finally { narrow.renderer.destroy(); }
+    const wide = await renderEntries([entry], { width: SPLIT_MIN_WIDTH + 20 });
+    try {
+      const frame = await frameContaining(wide, 'const a = 2;');
+      expect(locate(frame, 'const a = 1;').y).toBe(locate(frame, 'const a = 2;').y);
+      expect(frame).toContain('src/a.ts +1 −1');
+    } finally { wide.renderer.destroy(); }
+  });
+
+  test('writes of new files stay unified even on wide terminals', async () => {
+    const view = await renderEntries([tool('Write', { file_path: 'n.txt', content: 'one\ntwo' })], { width: SPLIT_MIN_WIDTH + 20 });
+    try {
+      const frame = await frameContaining(view, 'two');
+      expect(locate(frame, 'one').y).not.toBe(locate(frame, 'two').y);
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('clicking the header expands a collapsed diff and the hint collapses it again', async () => {
+    const entryWithLongContent = tool('Write', { file_path: 'big.txt', content: Array.from({ length: 60 }, (_, index) => 'row' + index).join('\n') });
+    const view = await renderEntries([entryWithLongContent], { height: 90 });
+    try {
+      expect(await frameContaining(view, 'more lines')).not.toContain('row59');
+      await clickText(view, 'big.txt +60');
+      expect(await frameContaining(view, 'row59')).toContain('row59');
+      await clickText(view, 'big.txt +60');
+      expect(await frameContaining(view, 'more lines')).not.toContain('row59');
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('MultiEdit and NotebookEdit render their blocks with counts', async () => {
+    const view = await renderEntries([
+      tool('MultiEdit', { file_path: 'm.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] }, { id: 'm' }),
+      tool('NotebookEdit', { notebook_path: 'n.ipynb', new_source: 'print(1)' }, { id: 'n' }),
+    ], { height: 40 });
+    try {
+      const frame = await frameContaining(view, 'print(1)');
+      expect(frame).toContain('m.ts +2 −2');
+      expect(frame).toContain('n.ipynb +1 −0');
+    } finally { view.renderer.destroy(); }
+  });
+});
+
+describe('tool blocks', () => {
+  test('one state per tool: running, succeeded, failed', () => {
+    expect(toolState(tool('Bash', {}, { status: 'running' }))).toBe('running');
+    expect(toolState(tool('Bash', {}, { status: 'done' }))).toBe('succeeded');
+    expect(toolState(tool('Bash', {}, { status: 'done', isError: true }))).toBe('failed');
+    expect(toolState(tool('Bash', {}, { status: 'error' }))).toBe('failed');
+    expect(toolState({ id: 'x', kind: 'tool', text: 'X' })).toBe('running');
+  });
+
+  test('clicking a Bash row expands output and shows the whole command', async () => {
+    const output = Array.from({ length: 30 }, (_, index) => 'out' + index).join('\n');
+    const view = await renderEntries([tool('Bash', { command: 'npm test\nnpm run lint' }, { output, elapsedMs: 1200 })], { height: 70 });
+    try {
+      expect(await frameContaining(view, 'out29')).not.toContain('out0\n');
+      await clickText(view, '$ Bash');
+      const frame = await frameContaining(view, 'npm run lint');
+      expect(frame).toContain('$ npm test');
+      expect(frame).toContain('out0');
+      expect(frame).not.toContain('more lines');
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('WebSearch lists its sources and counts them; WebFetch shows status and size', async () => {
+    const output = 'Links: [{"title":"OpenTUI","url":"https://opentui.com/docs"},{"title":"Repo","url":"https://github.com/sst/opentui"},'
+      + '{"title":"Third","url":"https://a.dev/x"},{"title":"Fourth","url":"https://b.dev/y"}]\n\nSummary text';
+    const view = await renderEntries([
+      tool('WebSearch', { query: 'opentui' }, { id: 's', output }),
+      tool('WebFetch', { url: 'https://example.com' }, { id: 'f', output: 'Example Domain', result: { code: 200, codeText: 'OK', bytes: 12700 } }),
+    ], { height: 40 });
+    try {
+      const frame = await frameContaining(view, 'Example Domain');
+      expect(frame).toContain('◈ WebSearch opentui · 4 sources');
+      expect(frame).toContain('• opentui.com/docs — OpenTUI');
+      expect(frame).toContain('• a.dev/x — Third');
+      expect(frame).toContain('… 1 more source');
+      expect(frame).not.toContain('b.dev/y');
+      expect(frame).toContain('% WebFetch https://example.com · 200 OK · 12.4 KB');
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('web sources come from the structured result first, then JSON links, then bare URLs, without duplicates', () => {
+    const structured = { results: [{ tool_use_id: 'a', content: [{ title: 'One', url: 'https://one.dev/a' }, { title: 'Dup', url: 'https://one.dev/a' }] }, 'text'] };
+    expect(webSources('ignored https://other.dev', structured)).toEqual([{ url: 'https://one.dev/a', title: 'One' }]);
+    expect(webSources('{"url":"https://x.dev/p","title":"Reversed"}', undefined)).toEqual([{ url: 'https://x.dev/p', title: 'Reversed' }]);
+    expect(webSources('See https://a.dev/page, and https://a.dev/page. Also https://b.dev', undefined).map(source => source.url)).toEqual(['https://a.dev/page', 'https://b.dev']);
+    expect(webSources('nothing here', undefined)).toEqual([]);
+    expect(sourceLabel({ url: 'https://a.dev/' })).toBe('a.dev');
+    expect(sourceLabel({ url: 'not a url' })).toBe('not a url');
+    expect(fetchMeta({ code: 404, codeText: 'Not Found', bytes: 5 })).toEqual({ code: 404, codeText: 'Not Found', bytes: 5 });
+    expect(fetchMeta('nope')).toEqual({});
+  });
+
+  test('TodoWrite shows progress in its row and the live checklist beneath', async () => {
+    expect(todoProgress([{ status: 'completed' }, { status: 'pending' }, { status: 'completed' }])).toBe('2/3 done');
+    const view = await renderEntries([tool('TodoWrite', { todos: [
+      { content: 'First', status: 'completed' }, { content: 'Second', status: 'in_progress', activeForm: 'Doing second' }, { content: 'Third', status: 'pending' },
+    ] })]);
+    try {
+      const frame = await frameContaining(view, 'Third');
+      expect(frame).toContain('☐ TodoWrite 1/3 done');
+      expect(frame).toContain('◐ Doing second');
+    } finally { view.renderer.destroy(); }
+  });
+});
+
+describe('inline permission rows', () => {
+  const record = (permission: PermissionRecord, input: Record<string, unknown> = { command: 'npm test' }, toolName = 'Bash') =>
+    ({ id: 'permission:' + toolName + permission.decision, kind: 'permission', text: toolName, toolName, input, permission }) as TranscriptEntry;
+
+  test('describes each decision and who made it', () => {
+    expect(permissionLine({ decision: 'pending' })).toMatchObject({ glyph: '?', tone: 'pending', by: 'waiting for your decision' });
+    expect(permissionLine({ decision: 'allow-once', decidedBy: 'user' })).toMatchObject({ headline: 'Allowed once', tone: 'allowed', by: 'by you' });
+    expect(permissionLine({ decision: 'allow-session', decidedBy: 'user' }).headline).toBe('Allowed for this session');
+    expect(permissionLine({ decision: 'deny', decidedBy: 'user' })).toMatchObject({ glyph: '✗', tone: 'denied' });
+    expect(permissionLine({ decision: 'cancelled', decidedBy: 'engine' })).toMatchObject({ tone: 'cancelled', by: 'ended before a decision' });
+    expect(permissionDetails({ decision: 'allow-session', agentId: 'ag', blockedPath: '/p', rules: ['Bash(npm:*)', 'Edit'] }))
+      .toEqual(['agent ag', 'path /p', 'rules Bash(npm:*), Edit']);
+    expect(permissionDetails({ decision: 'allow-once', rules: ['Bash'] })).toEqual([]);
+  });
+
+  test('stays in the transcript after the decision, with request context', async () => {
+    const view = await renderEntries([
+      record({ decision: 'pending' }),
+      record({ decision: 'allow-session', decidedBy: 'user', agentId: 'agent-7', rules: ['Bash(npm test:*)'] }),
+      record({ decision: 'deny', decidedBy: 'user' }, { file_path: 'a.txt' }, 'Write'),
+      record({ decision: 'cancelled', decidedBy: 'engine' }, { file_path: 'b.txt' }, 'Edit'),
+    ], { height: 30 });
+    try {
+      const frame = await frameContaining(view, 'Request ended');
+      expect(frame).toContain('? Permission requested · Bash npm test · waiting for your decision');
+      expect(frame).toContain('✓ Allowed for this session · Bash npm test · by you');
+      expect(frame).toContain('agent agent-7');
+      expect(frame).toContain('rules Bash(npm test:*)');
+      expect(frame).toContain('✗ Denied · Write a.txt · by you');
+      expect(frame).toContain('∅ Request ended · Edit b.txt · ended before a decision');
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('entries without a record render nothing', () => {
+    expect(isRenderable({ id: 'p', kind: 'permission', text: 'Bash' }, false)).toBe(false);
+  });
+
+  test('controller helpers key the row by request id, clip long inputs and map answers to decisions', () => {
+    const entry = permissionEntry('req-1', 'Write', { file_path: 'a.ts', content: 'x'.repeat(2000) }, { decision: 'pending' });
+    expect(entry).toMatchObject({ id: 'permission:req-1', kind: 'permission', toolName: 'Write' });
+    expect((entry.input!.content as string).length).toBe(301);
+    expect(permissionOutcome('allow', false)).toEqual({ decision: 'allow-once', decidedBy: 'user' });
+    expect(permissionOutcome('session', false)).toEqual({ decision: 'allow-session', decidedBy: 'user' });
+    expect(permissionOutcome('deny', false)).toEqual({ decision: 'deny', decidedBy: 'user' });
+    expect(permissionOutcome('allow', true)).toEqual({ decision: 'cancelled', decidedBy: 'engine' });
+    expect(suggestionRules([{ rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }, { toolName: 'Read' }] }, null])).toEqual(['Bash(npm test:*)', 'Read']);
+  });
+});
+
+describe('images', () => {
+  test('reads dimensions from PNG, JPEG, GIF and WebP headers', () => {
+    expect(imageDimensions(pngHeader(1200, 800))).toEqual({ width: 1200, height: 800 });
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.alloc(14), Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0xe0, 0x02, 0x80, 0x03]), Buffer.alloc(20)]);
+    expect(imageDimensions(jpeg)).toEqual({ width: 640, height: 480 });
+    const gif = Buffer.concat([Buffer.from('GIF89a', 'latin1'), Buffer.from([0x40, 0x01, 0xc8, 0x00]), Buffer.alloc(8)]);
+    expect(imageDimensions(gif)).toEqual({ width: 320, height: 200 });
+    const webp = Buffer.alloc(30);
+    webp.write('RIFF', 0, 'latin1');
+    webp.write('WEBP', 8, 'latin1');
+    webp.write('VP8X', 12, 'latin1');
+    webp.writeUIntLE(99, 24, 3);
+    webp.writeUIntLE(49, 27, 3);
+    expect(imageDimensions(webp)).toEqual({ width: 100, height: 50 });
+    expect(imageDimensions(Buffer.from('not an image at all, just text'))).toBeUndefined();
+  });
+
+  test('describes image blocks, keeps small payloads and ignores other blocks', () => {
+    const png = pngHeader(10, 20);
+    expect(describeImageBlock(imageBlock(png))).toEqual({ mediaType: 'image/png', bytes: 33, width: 10, height: 20, data: png.toString('base64') });
+    expect(describeImageBlock({ type: 'text', text: 'x' })).toBeUndefined();
+    expect(describeImageBlock({ type: 'image', source: { type: 'url', url: 'x' } })).toBeUndefined();
+    const huge = describeImageBlock({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngHeader(1, 1).toString('base64') + 'A'.repeat(IMAGE_DATA_LIMIT * 4 / 3) } })!;
+    expect(huge.data).toBeUndefined();
+    expect(huge.bytes).toBeGreaterThan(IMAGE_DATA_LIMIT);
+    expect(imageBlocks([{ type: 'text', text: 'a' }, imageBlock(png), imageBlock(png, 'image/jpeg')])).toHaveLength(2);
+    expect(imageBlocks('plain string')).toEqual([]);
+  });
+
+  test('tool results and saved prompts carry their images; the flat output still names them', () => {
+    const png = pngHeader(64, 32);
+    const result = toolResultEntry({ tool_use_id: 't1', content: [{ type: 'text', text: 'shot' }, imageBlock(png)] }, {});
+    expect(result.output).toBe('shot\n[image]');
+    expect(result.images).toEqual([expect.objectContaining({ width: 64, height: 32 })]);
+    expect(toolResultEntry({ tool_use_id: 't2', content: 'plain' }, {}).images).toBeUndefined();
+    const { entries } = historyEntries([{ type: 'user', uuid: 'u1', message: { content: [{ type: 'text', text: 'see' }, imageBlock(png)] } }]);
+    expect(entries[0]).toMatchObject({ kind: 'user', text: 'see', images: [expect.objectContaining({ width: 64 })] });
+    const imageOnly = historyEntries([{ type: 'user', uuid: 'u2', message: { content: [imageBlock(png)] } }]).entries;
+    expect(imageOnly[0]).toMatchObject({ kind: 'user', text: '' });
+  });
+
+  test('placeholders show type, size and bytes with open and copy actions', async () => {
+    const view = await renderEntries([
+      { id: 'u', kind: 'user', text: 'Look', images: [{ mediaType: 'image/png', bytes: 123456, width: 1200, height: 800, data: 'AA==' }, { mediaType: 'image/jpeg', bytes: 9000000 }] },
+      tool('Read', { file_path: 'shot.png' }, { id: 'r', output: '[image]', images: [{ mediaType: 'image/gif', bytes: 512, width: 4, height: 4, data: 'AA==' }] }),
+    ], { height: 20 });
+    try {
+      const frame = await frameContaining(view, 'image/gif');
+      expect(frame).toContain('▣ Image 1 · image/png · 1200×800 · 120.6 KB [open] [copy]');
+      expect(frame).toContain('▣ Image 2 · image/jpeg · 8.6 MB (content not kept)');
+      expect(frame).toContain('image/gif · 4×4 · 512 B');
+    } finally { view.renderer.destroy(); }
+    expect(imageLabel({ mediaType: 'image/webp', bytes: 2048 })).toBe('image/webp · 2.0 KB');
+    expect(formatBytes(1023)).toBe('1023 B');
+  });
+
+  test('open and copy report their outcome in the row, including failures', async () => {
+    const calls: string[] = [];
+    const actions: ImageActions = {
+      open: async () => { calls.push('open'); return '/tmp/image.png'; },
+      copy: async image => { calls.push('copy'); if (image.mediaType === 'image/webp') return { copied: 'path', path: '/tmp/image.webp' }; throw new Error('no clipboard'); },
+    };
+    const view = await testRender(() => (
+      <box width="100%" flexDirection="column">
+        <ImageList actions={actions} images={[{ mediaType: 'image/png', bytes: 10, data: 'AA==' }, { mediaType: 'image/webp', bytes: 10, data: 'AA==' }]} />
+      </box>
+    ), { width: 100, height: 6 });
+    try {
+      await view.renderOnce();
+      await clickText(view, '[open]');
+      expect(await frameContaining(view, 'opened /tmp/image.png')).toContain('opened /tmp/image.png');
+      await clickText(view, '[copy]');
+      expect(await frameContaining(view, 'failed: no clipboard')).toContain('failed: no clipboard');
+      const rows = view.captureCharFrame().split('\n');
+      const webpRow = rows.findIndex(row => row.includes('Image 2'));
+      await view.mockMouse.click(rows[webpRow].lastIndexOf('[copy]') + 1, webpRow);
+      expect(await frameContaining(view, 'file path copied')).toContain('format not supported by the clipboard; file path copied');
+      expect(calls).toEqual(['open', 'copy', 'copy']);
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('platform commands avoid shells and pass paths through the environment, argument or stdin', () => {
+    expect(openImageCommand('win32')).toMatchObject({ command: 'powershell.exe', path: 'env' });
+    expect(openImageCommand('win32').args.join(' ')).toContain('Start-Process -LiteralPath $env:CLAUDAPTER_CLIPBOARD_IMAGE');
+    expect(openImageCommand('darwin')).toEqual({ command: 'open', path: 'argument', args: [] });
+    expect(openImageCommand('linux')).toEqual({ command: 'xdg-open', path: 'argument', args: [] });
+    expect(copyImageCommand('win32', 'image/jpeg')).toMatchObject({ command: 'powershell.exe', path: 'env' });
+    expect(copyImageCommand('darwin', 'image/png')).toMatchObject({ command: 'osascript' });
+    expect(copyImageCommand('darwin', 'image/jpeg')).toBeUndefined();
+    expect(copyImageCommand('linux', 'image/png', {})).toEqual({ command: 'xclip', path: 'stdin', args: ['-selection', 'clipboard', '-t', 'image/png', '-i'] });
+    expect(copyImageCommand('linux', 'image/gif', { WAYLAND_DISPLAY: 'wayland-0' })).toEqual({ command: 'wl-copy', path: 'stdin', args: ['--type', 'image/gif'] });
+    expect(imageExtension('image/jpeg')).toBe('jpg');
+    expect(imageExtension('image/x-unknown')).toBe('img');
+  });
+});
+
+describe('Markdown fidelity', () => {
+  const sample = [
+    '# Heading', '', 'Text with **bold**, `code` and a [link](https://example.com/docs).', '',
+    '- one', '  - nested', '    - deeper', '- two', '', '> quoted line', '', '| Name | 说明 |', '| --- | --- |', '| alpha | 日本語のテキスト |', '',
+    '```ts', 'const x: number = 1;', '```', '', 'After code.',
+  ].join('\n');
+
+  test('splits top-level fences from the Markdown around them', () => {
+    expect(splitFences('before\n\n```python title\nprint(1)\n```\n\nafter\n- item')).toEqual([
+      { kind: 'markdown', text: 'before' },
+      { kind: 'code', text: 'print(1)', language: 'python' },
+      { kind: 'markdown', text: 'after\n- item' },
+    ]);
+    expect(splitFences('plain text')).toEqual([{ kind: 'markdown', text: 'plain text' }]);
+    expect(splitFences('')).toEqual([]);
+    expect(splitFences('    indented code')).toEqual([{ kind: 'markdown', text: '    indented code' }]);
+  });
+
+  test('an unterminated fence while streaming is still a code block', () => {
+    expect(splitFences('intro\n\n```js\nlet a =')).toEqual([
+      { kind: 'markdown', text: 'intro' },
+      { kind: 'code', text: 'let a =', language: 'js' },
+    ]);
+  });
+
+  test('renders headings, nested lists, quotes, tables with wide characters and labelled code', async () => {
+    const view = await renderEntries([{ id: 'a', kind: 'assistant', text: sample }], { width: 60, height: 40 });
+    try {
+      const frame = await frameContaining(view, 'After code.');
+      expect(frame).toContain('Heading');
+      expect(frame).toContain('Text with bold, code and a link.');
+      const indentOf = (word: string) => locate(frame, word).x;
+      expect(indentOf('nested')).toBeGreaterThan(indentOf('one'));
+      expect(indentOf('deeper')).toBeGreaterThan(indentOf('nested'));
+      expect(frame).toContain('│ quoted line');
+      expect(frame).toContain('日本語のテキスト');
+      expect(frame).toMatch(/┌─+┬─+┐/);
+      const label = frame.split('\n').find(row => row.includes('ts') && row.includes('copy'))!;
+      expect(label).toBeDefined();
+      expect(frame).toContain('const x: number = 1;');
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('long wide-character text wraps without losing or clipping characters', async () => {
+    const text = '日本語のテキスト'.repeat(8) + ' end';
+    const view = await renderEntries([{ id: 'a', kind: 'assistant', text }], { width: 30, height: 20 });
+    try {
+      const frame = await frameContaining(view, 'end');
+      expect(frame.replace(/\s+/g, '')).toContain(text.replace(/\s+/g, ''));
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('stays within 44 columns, wrapping code lines instead of overflowing', async () => {
+    const view = await renderEntries([{ id: 'a', kind: 'assistant', text: '```sh\n' + 'echo ' + 'word '.repeat(20) + '\n```' }], { width: 44, height: 20 });
+    try {
+      const frame = await frameContaining(view, 'echo');
+      for (const row of frame.split('\n')) expect(row.length).toBeLessThanOrEqual(44);
+      expect(frame.replace(/\s+/g, '')).toContain(('echo ' + 'word '.repeat(20)).replace(/\s+/g, ''));
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('the copy action copies the exact code and reports success or failure', async () => {
+    const copied: string[] = [];
+    let failing = false;
+    const copy = async (text: string) => { if (failing) throw new Error('nope'); copied.push(text); };
+    const view = await testRender(() => (
+      <box width="100%" flexDirection="column"><CodeBlock code={'line 1\nline 2'} language="ts" streaming={false} copy={copy} /></box>
+    ), { width: 60, height: 10 });
+    try {
+      await view.renderOnce();
+      await clickText(view, 'copy');
+      expect(await frameContaining(view, 'copied')).toContain('copied');
+      expect(copied).toEqual(['line 1\nline 2']);
+      failing = true;
+      await new Promise(resolve => setTimeout(resolve, 1600));
+      await view.renderOnce();
+      await clickText(view, 'copy');
+      expect(await frameContaining(view, 'copy failed')).toContain('copy failed');
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('streaming code blocks offer no copy action until they are complete', async () => {
+    const view = await testRender(() => (
+      <box width="100%" flexDirection="column"><CodeBlock code="let a =" language="js" streaming /></box>
+    ), { width: 40, height: 6 });
+    try {
+      const frame = await frameContaining(view, 'let a =');
+      expect(frame).toContain('js');
+      expect(frame).not.toContain('copy');
+    } finally { view.renderer.destroy(); }
+  });
+});
+
+describe('transcript extension points', () => {
+  test('entryFooter renders under an entry, taskCall replaces the launch card, hide removes entries', async () => {
+    const launch = tool('Agent', { subagent_type: 'Explore', description: 'Find auth' }, { id: 'agent', taskId: 't1' });
+    const view = await renderWith([
+      { id: 'a', kind: 'assistant', text: 'Main answer' },
+      launch,
+      { id: 'sub', kind: 'assistant', text: 'Sub stream content', agent: 'tool-use-1' },
+    ], {
+      entryFooter: entry => entry.kind === 'assistant' && !entry.agent ? <text>ROUTE-BADGE</text> : undefined,
+      taskCall: entry => <text>{'COMPACT ' + entry.id}</text>,
+      hide: entry => !!entry.agent,
+    });
+    try {
+      await frameContaining(view, 'Main answer');
+      const frame = await frameContaining(view, 'COMPACT agent');
+      const rows = frame.split('\n');
+      expect(rows.findIndex(row => row.includes('ROUTE-BADGE'))).toBe(rows.findIndex(row => row.includes('Main answer')) + 1);
+      expect(frame).toContain('COMPACT agent');
+      expect(frame).not.toContain('◉ Explore');
+      expect(frame).not.toContain('Sub stream content');
+    } finally { view.renderer.destroy(); }
+  });
+
+  test('without slots the default rendering is unchanged', async () => {
+    const view = await renderWith([{ id: 'a', kind: 'assistant', text: 'Plain answer' }], undefined);
+    try {
+      const frame = await frameContaining(view, 'Plain answer');
+      expect(frame).not.toContain('ROUTE-BADGE');
+    } finally { view.renderer.destroy(); }
   });
 });

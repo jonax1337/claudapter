@@ -7,12 +7,15 @@ import { Registry, type Model } from './models.js';
 import { TurnTranslator, readServerSentEvents } from './translate.js';
 import { defaults, type Config } from './config.js';
 import { FallbackState, classify, assertCompatible, retryDelay, type Identity } from './fallback.js';
+import { switchReason, type RouteScope } from './route-events.js';
 import { Providers } from './providers.js';
 import { UsageLedger, QuotaReader, type UsageAttempt } from './usage.js';
 
 export const TOKEN_HEADER = 'x-claudapter-token';
 /** A provider whose fresh quota window reports this much usage is skipped for earlier fallback targets. */
-const QUOTA_PREEMPT_PERCENT = 95;
+export const QUOTA_PREEMPT_PERCENT = 95;
+/** How often expired cooldowns are announced as recovered without waiting for the next request. */
+const COOLDOWN_SWEEP_MS = 1000;
 export interface RouteEvent {
   time: string; event: string; session?: string; agent?: string; requestClass?: string;
   requested: string; actual: string; provider: string; status?: number;
@@ -37,8 +40,11 @@ export async function startGateway(options: GatewayOptions) {
   const usage = new UsageLedger();
   const quotas = new QuotaReader(config,auth,upstreamFetch);
   const state = new FallbackState(config.fallback);
+  const sweep = setInterval(() => state.expire(), COOLDOWN_SWEEP_MS); sweep.unref();
   const controllers = new Set<AbortController>();
   const interrupted = new Set<string>();
+  /** Interruption fingerprints kept to refuse automatic replays; beyond this, the oldest are dropped. */
+  const INTERRUPTED_MAX = 4096;
   const events: RouteEvent[] = [];
   const emit = (event: RouteEvent) => { events.push(event); if (events.length > 200) events.shift(); options.onEvent?.(event); };
   const server = createServer((req, res) => { void handle(req, res); });
@@ -129,7 +135,8 @@ export async function startGateway(options: GatewayOptions) {
           if (usageAttempt) usageAttempt.status=upstream.status;
           emit({...event,event:'response',status:upstream.status});
           if (upstream.ok) {
-            if (model.id!==body.model && policy && (targetIndex>0 || routed===body.model)) state.set(identity,body.model,model.id,Math.max(policy.cooldownMs,retryHint),lastReason);
+            if (model.id!==body.model && policy && (targetIndex>0 || routed===body.model))
+              state.set(identity,{requested:body.model,actual:model.id,provider:model.provider,cooldownMs:Math.max(policy.cooldownMs,retryHint),reason:lastReason,retryAfterMs:retryHint});
             break outer;
           }
           if ([401,403].includes(upstream.status)) {model.auth='expired';model.availability='auth_failed';delete model.verifiedAt;}
@@ -140,6 +147,7 @@ export async function startGateway(options: GatewayOptions) {
           if(reason) {model.availability='temporarily_unavailable';model.unavailableUntil=Date.now()+Math.max(retryHint,policy?.cooldownMs??60000);}
           if (!policy || !reason || !policy.errors.includes(reason)) {
             if(policy)state.block(identity,'policy-failed');
+            else if(reason) announceUnprotected(identity,body.model,model.provider,reason,retryHint);
             return failureResponse(res,upstream,failure,model.provider);
           }
           lastReason=reason;
@@ -148,6 +156,8 @@ export async function startGateway(options: GatewayOptions) {
           }
           if (targetIndex===targets.length-1) {
             state.block(identity,'policy-exhausted');
+            const scope=noticeScope(identity);
+            if(scope) state.notices.publish({kind:'exhausted',scope,requested:body.model,chain:targets,reason:switchReason(lastReason),at:Date.now()});
             return error(res,upstream.status,'Configured fallback chain exhausted; no other provider is allowed.');
           }
           break;
@@ -211,12 +221,23 @@ export async function startGateway(options: GatewayOptions) {
       if (usageAttempt) usage.finish(usageAttempt,'interrupted');
       if (res.headersSent) {
         state.block(identity);
-        if (fingerprint) interrupted.add(fingerprint);
+        if (fingerprint) { if (interrupted.size >= INTERRUPTED_MAX) interrupted.delete(interrupted.values().next().value!); interrupted.add(fingerprint); }
         if (event) emit({...event, event:'interrupted',reason:'No replay after output started'});
+        const scope=noticeScope(identity);
+        if (event && scope) state.notices.publish({kind:'interrupted',scope,requested:event.requested,actual:event.actual,provider:event.provider,at:Date.now()});
         // A protocol error ends the turn; the replay guard also catches native retries.
         res.end('event: error\ndata: '+JSON.stringify({type:'error',error:{type:'invalid_request_error',message:'Interrupted upstream stream. Automatic replay is blocked.'}})+'\n\n');
       } else error(res, e instanceof BodyLimitError ? 413 : 400, 'Gateway request stopped; no replay. ' + safeMessage((e as Error).message));
     } finally { clearTimeout(timer); controllers.delete(controller); }
+  }
+  /** Main and sub-agent requests only: auxiliary traffic cannot be protected by a fallback rule. */
+  function noticeScope(identity: Identity): RouteScope | undefined {
+    if (!identity.session || !['main','subagent'].includes(identity.requestClass ?? '')) return;
+    return {session:identity.session,...(identity.agent?{agent:identity.agent}:{})};
+  }
+  function announceUnprotected(identity: Identity, requested: string, provider: string, reason: string, retryAfterMs: number) {
+    const scope=noticeScope(identity); if (!scope) return;
+    state.notices.publish({kind:'unprotected',scope,requested,provider,reason:switchReason(reason),at:Date.now(),...(retryAfterMs?{retryAfterMs}:{})});
   }
   function context(event: string) {
     const full=manifest();
@@ -235,7 +256,8 @@ export async function startGateway(options: GatewayOptions) {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Cannot bind loopback gateway.');
   return { baseUrl:'http://127.0.0.1:' + address.port, token, events, registry: options.registry,state,manifest,usage,quotas,
-    async close() { for (const c of controllers) c.abort(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+    subscribeRoutes: state.notices.subscribe,
+    async close() { clearInterval(sweep); for (const c of controllers) c.abort(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 
 function header(req: IncomingMessage, key: string): string | undefined {

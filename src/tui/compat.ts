@@ -13,7 +13,10 @@ export const compatReadMethods = [
 ] as const;
 export const compatMutationMethods = ['setCwd', 'selectChromeBrowser', 'mcpAuthenticate', 'mcpClearAuth',
   'mcpSubmitOAuthCallbackUrl', 'claudeAuthenticate', 'claudeOAuthCallback', 'claudeOAuthWaitForCompletion', 'enableRemoteControl'] as const;
-export type CompatMethod = typeof compatReadMethods[number] | typeof compatMutationMethods[number];
+/** Methods that spend model inference without changing session state; the caller confirms each use. */
+export const compatInferenceMethods = ['askSideQuestion'] as const;
+export type CompatMethod = typeof compatReadMethods[number] | typeof compatMutationMethods[number] | typeof compatInferenceMethods[number];
+export const SIDE_QUESTION_MAX_LENGTH = 4000;
 const challenges = new WeakMap<object, { path: string; directory: string }>();
 const isRecord = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const plainPath = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length < 32768 && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value);
@@ -50,6 +53,7 @@ export function launchWorkspaceTrust(directory: string, accepted: boolean): { wo
 }
 
 function validResult(method: CompatMethod, value: unknown): boolean {
+  if (method === 'askSideQuestion') return value === null || isRecord(value) && typeof value.response === 'string' && typeof value.synthetic === 'boolean';
   if (['mcpClearAuth', 'mcpSubmitOAuthCallbackUrl'].includes(method)) return value === undefined || isRecord(value);
   if (method === 'enableRemoteControl' && value === undefined) return true;
   if (!isRecord(value)) return false;
@@ -80,7 +84,7 @@ function validResult(method: CompatMethod, value: unknown): boolean {
 
 /** Narrow facade: explicit consent for mutations; no arbitrary controls, redirect targets, tokens or paid login modes. */
 export async function invokeCompat(query: Query, method: CompatMethod, args?: Record<string, unknown>): Promise<any> {
-  if (!(compatReadMethods as readonly string[]).includes(method) && !(compatMutationMethods as readonly string[]).includes(method)) throw new Error('Unsupported native compatibility method.');
+  if (!(compatReadMethods as readonly string[]).includes(method) && !(compatMutationMethods as readonly string[]).includes(method) && !(compatInferenceMethods as readonly string[]).includes(method)) throw new Error('Unsupported native compatibility method.');
   const initialized = await query.initializationResult();
   assertCompatVersion(initialized.claude_code_version);
   const operation = (query as unknown as Record<string, unknown>)[method];
@@ -100,6 +104,11 @@ export async function invokeCompat(query: Query, method: CompatMethod, args?: Re
       result = await operation.call(query, args.path);
     }
     if (isRecord(result) && result.status === 'needs_trust' && absolutePath(result.directory)) challenges.set(query, { path: args.path, directory: result.directory });
+  } else if (method === 'askSideQuestion') {
+    mutationArgs(args, ['question', 'signal']);
+    if (typeof args.question !== 'string' || !args.question.trim() || args.question.length > SIDE_QUESTION_MAX_LENGTH) throw new Error('A side question needs 1 to ' + SIDE_QUESTION_MAX_LENGTH + ' characters.');
+    if (args.signal !== undefined && !(args.signal instanceof AbortSignal)) throw new Error('Invalid side-question cancellation signal.');
+    result = await operation.call(query, args.question, args.signal ? { signal: args.signal } : undefined);
   } else if (method === 'selectChromeBrowser') {
     mutationArgs(args, ['deviceId']);
     if (!stringValue(args.deviceId, 512)) throw new Error('Invalid browser device ID.');

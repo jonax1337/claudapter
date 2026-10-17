@@ -12,6 +12,10 @@ import { SettingsPanel } from '../src/tui/opencode/settings';
 import { SnapshotPanel } from '../src/tui/opencode/snapshot-view';
 import { Menu } from '../src/tui/opencode/menu';
 import { toolSummary } from '../src/tui/opencode/transcript';
+import { Spinner, StatusBar, formatReset, meterCells } from '../src/tui/opencode/status';
+import { fitSegments } from '../src/tui/opencode/layout';
+import { activeTickers } from '../src/tui/opencode/clock';
+import { shortcutGroups } from '../src/tui/opencode/shortcuts';
 
 const FRAME_WAIT_MS = 2000;
 
@@ -327,12 +331,12 @@ test('usage panel renders quota meters, totals and refreshes on r', async () => 
   const view = await testRender(() => <UsagePanel snapshot={snapshot} refresh={async () => { refreshed.push(1); }} onClose={() => {}} />,
     { width: 100, height: 30 });
     const frame = await frameContaining(view, 'REQUEST TOKENS');
-    for (const label of ['ANTHROPIC', 'CHATGPT', 'Session', '62% used', 'resets in', 'usage unknown', '97% used']) expect(frame).toContain(label);
+    for (const label of ['● Claude', '● ChatGPT', 'Session', '62% used', 'resets in', 'usage unknown', '97% used']) expect(frame).toContain(label);
     expect(frame).toContain('━');
     view.mockInput.pressKey('END');
     await view.renderOnce();
     const tail = view.captureCharFrame();
-    expect(tail).toContain('chatgpt / gpt-6.1-sol · agent gpt-reviewer');
+    expect(tail).toContain('ChatGPT / gpt-6.1-sol · agent gpt-reviewer');
     expect(tail).toContain('Input 12K · Output 3.4K');
     expect(tail).toContain('2/2 completed');
     expect(tail).toContain('Tokens unknown');
@@ -435,3 +439,138 @@ test('adopted home renders branding, composer and footer at terminal widths', as
   }
 });
 
+
+async function settled(view: Awaited<ReturnType<typeof testRender>>) {
+  await new Promise(resolve => setTimeout(resolve, 40));
+  await view.renderOnce();
+  return view.captureCharFrame();
+}
+
+function idleController(overrides: Record<string, unknown> = {}) {
+  return { state: { ready: true, busy: false, model: 'fixture', status: 'Ready', entries: [], pending: [], ...overrides },
+    subscribe: () => () => {}, send() {}, answer() {}, cancelDialog() {} };
+}
+
+test('home shows provider identity and recent sessions without moving the prompt while they load', async () => {
+  let release: (sessions: any[]) => void = () => {};
+  const pending = new Promise<any[]>(resolve => { release = resolve; });
+  const now = Date.now();
+  const controller = { ...idleController({ models: [
+    { id: 'opus', label: 'Opus', provider: 'anthropic', auth: 'unknown' },
+    { id: 'gpt-6.1-sol', label: 'GPT 6.1', provider: 'chatgpt', auth: 'authenticated' },
+    { id: 'glm-5.3', label: 'GLM 5.3', provider: 'zai', auth: 'missing' },
+  ] }), sessions: () => pending };
+  const view = await testRender(() => <App controller={controller} />, { width: 100, height: 40 });
+  try {
+    const before = await settled(view);
+    expect(before).toContain('● Claude');
+    expect(before).toContain('● ChatGPT');
+    expect(before).toContain('○ Z.ai · sign in');
+    const promptRow = (frame: string) => frame.split('\n').findIndex(line => line.includes('Ask anything'));
+    release([{ sessionId: 's1', summary: 'Fix flaky gateway test', lastModified: now - 2 * 3_600_000 }]);
+    const after = await settled(view);
+    expect(after).toContain('Fix flaky gateway test');
+    expect(after).toContain('2h ago');
+    expect(promptRow(after)).toBe(promptRow(before));
+  } finally { view.renderer.destroy(); }
+});
+
+test('question mark on an empty prompt opens the shortcuts overlay and escape closes it', async () => {
+  const view = await testRender(() => <App controller={idleController()} preferences={{ thinking: false, theme: 'midnight',
+    keybindings: { 'ctrl+p': '/help', f4: '/usage' } }} />, { width: 100, height: 40 });
+  try {
+    await settled(view);
+    view.mockInput.pressKey('?');
+    let frame = await settled(view);
+    expect(frame).toContain('Keyboard shortcuts');
+    expect(frame).toContain('Command palette');
+    expect(frame).toContain('Command shortcuts');
+    view.mockInput.pressEscape();
+    frame = await settled(view);
+    expect(frame).not.toContain('Keyboard shortcuts');
+    expect(frame).toContain('Ask anything');
+  } finally { view.renderer.destroy(); }
+});
+
+test('escape closes the top-most overlay first and interrupts the turn only afterwards', async () => {
+  const interrupts: string[] = [];
+  const controller = { ...idleController({ busy: true, status: 'Working', entries: [{ id: 'u', kind: 'user', text: 'Question' }] }),
+    interrupt: async () => { interrupts.push('interrupt'); } };
+  const view = await testRender(() => <App controller={controller} />, { width: 100, height: 30 });
+  try {
+    await settled(view);
+    view.mockInput.pressKey('?');
+    expect(await settled(view)).toContain('Keyboard shortcuts');
+    view.mockInput.pressEscape();
+    expect(await settled(view)).not.toContain('Keyboard shortcuts');
+    expect(interrupts).toEqual([]);
+    view.mockInput.pressEscape();
+    await settled(view);
+    expect(interrupts).toEqual(['interrupt']);
+  } finally { view.renderer.destroy(); }
+});
+
+test('status bar keeps a compact context meter when the full one does not fit', async () => {
+  const context = { totalTokens: 50_000, maxTokens: 200_000 };
+  for (const [width, full] of [[120, true], [30, false]] as const) {
+    const view = await testRender(() => <StatusBar busy={false} status="Ready" context={context} hints={[]} width={width} />,
+      { width: 130, height: 3 });
+    try {
+      await view.renderOnce();
+      const frame = view.captureCharFrame();
+      expect(frame).toContain('25%');
+      expect(frame.includes('50K / 200K')).toBe(full);
+    } finally { view.renderer.destroy(); }
+  }
+});
+
+test('segments shrink to their compact form before they are dropped', () => {
+  const segments = [
+    { id: 'context', width: 30, compactWidth: 8, priority: 1 },
+    { id: 'hints', width: 20, priority: 2 },
+  ];
+  expect(fitSegments(segments, 60).map(segment => [segment.id, segment.compact])).toEqual([['context', false], ['hints', false]]);
+  expect(fitSegments(segments, 40).map(segment => [segment.id, segment.compact])).toEqual([['context', false]]);
+  expect(fitSegments(segments, 20).map(segment => [segment.id, segment.compact])).toEqual([['context', true]]);
+  expect(fitSegments(segments, 4)).toEqual([]);
+});
+
+test('meters fill at half-cell resolution and reset countdowns never show sixty minutes', () => {
+  expect(meterCells(0, 4)).toEqual({ filled: '', empty: '━━━━' });
+  expect(meterCells(0.5, 4)).toEqual({ filled: '━━', empty: '━━' });
+  expect(meterCells(0.125, 4)).toEqual({ filled: '╸', empty: '━━━' });
+  expect(meterCells(2, 4)).toEqual({ filled: '━━━━', empty: '' });
+  expect(formatReset(11 * 3_600_000 + 59.6 * 60_000)).toBe('12h');
+  expect(formatReset(90 * 60_000)).toBe('1h 30m');
+});
+
+test('reduced motion freezes spinners without starting a timer', async () => {
+  const previous = process.env.CLAUDAPTER_REDUCED_MOTION;
+  process.env.CLAUDAPTER_REDUCED_MOTION = '1';
+  const view = await testRender(() => <Spinner color="#ffffff" />, { width: 10, height: 2 });
+  try {
+    await view.renderOnce();
+    expect(activeTickers()).toBe(0);
+  } finally {
+    view.renderer.destroy();
+    if (previous === undefined) delete process.env.CLAUDAPTER_REDUCED_MOTION;
+    else process.env.CLAUDAPTER_REDUCED_MOTION = previous;
+  }
+});
+
+test('spinners share one timer per frame rate and release it on unmount', async () => {
+  const view = await testRender(() => <box><Spinner color="#ffffff" /><Spinner color="#ffffff" /><Spinner color="#ffffff" /></box>,
+    { width: 10, height: 2 });
+  try {
+    await view.renderOnce();
+    expect(activeTickers()).toBe(1);
+  } finally { view.renderer.destroy(); }
+  expect(activeTickers()).toBe(0);
+});
+
+test('shortcut overview lists bound commands that are not built in', () => {
+  const groups = shortcutGroups({ 'ctrl+p': '/help', f2: '/model', f10: '/usage' });
+  expect(groups.map(group => group.title)).toEqual(['General', 'Prompt', 'Transcript', 'Command shortcuts']);
+  expect(groups.at(-1)!.keys).toEqual([['f2', '/model'], ['f10', '/usage']]);
+  expect(shortcutGroups({}).map(group => group.title)).not.toContain('Command shortcuts');
+});

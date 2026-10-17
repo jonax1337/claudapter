@@ -1,4 +1,5 @@
 import { safeText } from './editor.js';
+import { imageBlocks } from './image-info.js';
 import type { TranscriptEntry } from './panels.js';
 
 export const OUTPUT_LIMIT = 16000;
@@ -41,6 +42,19 @@ export function promptText(content: unknown): string {
 
 export const isMetaMessage = (message: any) => message.isMeta === true || message.is_meta === true || message.isSynthetic === true;
 
+/** Sub-agent frames carry the spawning tool call; they belong to the sub-agent's transcript, never to the main one. */
+export const isSubagentMessage = (message: any) => typeof message.parent_tool_use_id === 'string' && message.parent_tool_use_id !== '';
+
+const AGENT_TOOLS = new Set(['Agent', 'Task']);
+const AGENT_ID_TRAILER = /\bagentId:\s*([A-Za-z0-9_-]+)/;
+
+/** The sub-agent an Agent tool result names, from its structured result or the `agentId:` trailer of its text. */
+export function reportedAgentId(toolName: string | undefined, result: unknown, output: string): string | undefined {
+  if (!toolName || !AGENT_TOOLS.has(toolName)) return undefined;
+  const structured = (result as { agentId?: unknown } | undefined)?.agentId;
+  return typeof structured === 'string' && structured ? structured : AGENT_ID_TRAILER.exec(output)?.[1];
+}
+
 /** Terminal-safe copy without undefined fields, so partial updates never erase known values when merged. */
 export function sanitizeEntry(entry: TranscriptEntry): TranscriptEntry {
   const clean: Record<string, unknown> = {};
@@ -66,15 +80,45 @@ export function contentBlockEntry(id: string, block: any, agent?: string, stream
   return undefined;
 }
 
+export type PermissionDecision = 'pending' | 'allow-once' | 'allow-session' | 'deny' | 'cancelled';
+
+/** A permission request and how it ended: `decidedBy` is the user, or the engine when the request was aborted. */
+export interface PermissionRecord { decision: PermissionDecision; decidedBy?: 'user' | 'engine'; agentId?: string; blockedPath?: string; rules?: string[] }
+
+const INPUT_FIELD_LIMIT = 300;
+
+/** Shallow copy of a tool input with long strings clipped: enough to name the request, without carrying file contents. */
+function clippedInput(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, typeof value === 'string' && value.length > INPUT_FIELD_LIMIT ? value.slice(0, INPUT_FIELD_LIMIT) + '…' : value]));
+}
+
+/** Transcript row for a permission request; the id is derived from the engine's request id so decisions update the same row. */
+export function permissionEntry(requestId: string, toolName: string, input: Record<string, unknown>, permission: PermissionRecord): TranscriptEntry {
+  return { id: 'permission:' + requestId, kind: 'permission', text: toolName, toolName, input: clippedInput(input), permission };
+}
+
+/** `Tool(content)` names of the session rules a permission suggestion would add. */
+export function suggestionRules(suggestions: unknown): string[] {
+  return (Array.isArray(suggestions) ? suggestions : []).flatMap(suggestion => (Array.isArray(suggestion?.rules) ? suggestion.rules : []))
+    .map((rule: any) => (rule?.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : String(rule?.toolName ?? ''))).filter(Boolean).map(safeText);
+}
+
+/** Maps the dialog answer to a decision. An aborted request ends as cancelled, decided by the engine rather than the user. */
+export function permissionOutcome(answer: unknown, aborted: boolean): Pick<PermissionRecord, 'decision' | 'decidedBy'> {
+  if (aborted) return { decision: 'cancelled', decidedBy: 'engine' };
+  return { decision: answer === 'allow' ? 'allow-once' : answer === 'session' ? 'allow-session' : 'deny', decidedBy: 'user' };
+}
+
 export interface ToolResultContext { existing?: TranscriptEntry; elapsedMs?: number; result?: unknown }
 
 /** Entry update that closes a tool call. `details` stays the legacy flat input-plus-output rendering. */
 export function toolResultEntry(block: any, { existing, elapsedMs, result }: ToolResultContext): TranscriptEntry {
   const output = safeText(flattenToolResult(block.content)).slice(0, OUTPUT_LIMIT);
   const isError = Boolean(block.is_error);
+  const images = imageBlocks(block.content);
   return { id: 'tool:' + block.tool_use_id, kind: 'tool', text: existing?.toolName ?? 'Tool result', toolName: existing?.toolName,
     status: isError ? 'error' : 'done', details: (existing?.details ?? '') + '\n\n' + output, agent: existing?.agent,
-    output, isError, elapsedMs, result: smallResult(result) };
+    output, isError, elapsedMs, result: smallResult(result), ...(images.length ? { images } : {}) };
 }
 
 /** A tool call that never got a result (the session ended mid-call) must not look like it is still running. */
@@ -132,7 +176,8 @@ class HistoryBuilder {
     const content = message.message?.content;
     if (message.isCompactSummary) { this.push({ id: 'notice:' + message.uuid, kind: 'notice', text: COMPACTION_NOTICE }); return; }
     const text = isMetaMessage(message) ? '' : promptText(content);
-    if (text) this.push({ id: message.uuid, kind: 'user', text });
+    const images = isMetaMessage(message) ? [] : imageBlocks(content);
+    if (text || images.length) this.push({ id: message.uuid, kind: 'user', text, ...(images.length ? { images } : {}) });
     for (const block of Array.isArray(content) ? content : []) if (block.type === 'tool_result') this.addToolResult(block, message);
   }
 
@@ -140,7 +185,9 @@ class HistoryBuilder {
     const existing = this.byId.get('tool:' + block.tool_use_id);
     if (!existing || existing.status !== 'running') return;
     const elapsedMs = Date.parse(message.timestamp) - (this.toolStarts.get(block.tool_use_id) ?? NaN);
-    this.push(toolResultEntry(block, { existing, elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : undefined }));
+    const closed = toolResultEntry(block, { existing, elapsedMs: Number.isFinite(elapsedMs) ? elapsedMs : undefined });
+    const agentId = reportedAgentId(existing.toolName, message.toolUseResult ?? message.tool_use_result, closed.output ?? '');
+    this.push(agentId ? { ...closed, taskId: agentId } : closed);
   }
 }
 

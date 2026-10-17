@@ -1,10 +1,16 @@
-import { For, Show, createMemo } from 'solid-js';
-import { useTheme } from './theme';
+import { Show, createMemo, createSignal } from 'solid-js';
+import { useTerminalDimensions } from '@opentui/solid';
+import { filetypeForPath, useSyntaxStyle } from './block-syntax';
+import { useClick } from './block-click';
+import { mix, useTheme } from './theme';
 
 export type DiffKind = 'add' | 'remove' | 'context' | 'gap';
 
-/** One rendered row of a unified diff. `lineNumber` is only set when the real file position is known. */
-export interface DiffRow { kind: DiffKind; text: string; lineNumber?: number }
+/**
+ * One rendered row of a unified diff. `lineNumber` is only set when the real file position is known;
+ * `oldLine`/`newLine` are the positions on each side (removals only have the old, additions only the new one).
+ */
+export interface DiffRow { kind: DiffKind; text: string; lineNumber?: number; oldLine?: number; newLine?: number }
 
 export interface FileDiff { path: string; rows: DiffRow[]; added: number; removed: number }
 
@@ -106,10 +112,9 @@ export function numberRows(rows: DiffRow[], oldStart = 1, newStart = 1): DiffRow
   let newLine = newStart;
   return rows.map(row => {
     if (row.kind === 'gap') return row;
-    if (row.kind === 'remove') return { ...row, lineNumber: oldLine++ };
-    if (row.kind === 'add') return { ...row, lineNumber: newLine++ };
-    oldLine++;
-    return { ...row, lineNumber: newLine++ };
+    if (row.kind === 'remove') return { ...row, lineNumber: oldLine, oldLine: oldLine++ };
+    if (row.kind === 'add') return { ...row, lineNumber: newLine, newLine: newLine++ };
+    return { ...row, lineNumber: newLine, oldLine: oldLine++, newLine: newLine++ };
   });
 }
 
@@ -171,10 +176,10 @@ export function unifiedDiff(patch: string): FileDiff[] {
     if (!current) continue;
     const kind = HUNK_PREFIX_KIND[line[0]];
     if (!kind) continue;
-    current.rows.push({ kind, text: line.slice(1), lineNumber: kind === 'remove' ? oldLine : newLine });
-    if (kind === 'remove') { current.removed++; oldLine++; }
-    else if (kind === 'add') { current.added++; newLine++; }
-    else { oldLine++; newLine++; }
+    const content = line.slice(1);
+    if (kind === 'remove') { current.rows.push({ kind, text: content, lineNumber: oldLine, oldLine }); current.removed++; oldLine++; }
+    else if (kind === 'add') { current.rows.push({ kind, text: content, lineNumber: newLine, newLine }); current.added++; newLine++; }
+    else { current.rows.push({ kind, text: content, lineNumber: newLine, oldLine, newLine }); oldLine++; newLine++; }
   }
   return files.filter(file => file.rows.length);
 }
@@ -230,41 +235,70 @@ export function visibleRows(rows: DiffRow[], expanded: boolean): { shown: DiffRo
   return { shown: rows.slice(0, COLLAPSED_ROWS), hidden: rows.length - COLLAPSED_ROWS };
 }
 
-const SIGNS: Record<DiffKind, string> = { add: '+', remove: '-', context: ' ', gap: ' ' };
+/** Terminal width from which a diff with both additions and removals is shown side by side. */
+export const SPLIT_MIN_WIDTH = 120;
 
+function hunksOf(rows: DiffRow[]): DiffRow[][] {
+  const hunks: DiffRow[][] = [[]];
+  for (const row of rows) {
+    if (row.kind === 'gap') hunks.push([]);
+    else hunks[hunks.length - 1].push(row);
+  }
+  return hunks.filter(hunk => hunk.length);
+}
+
+function hunkHeader(rows: DiffRow[]): string {
+  const oldCount = rows.filter(row => row.kind !== 'add').length;
+  const newCount = rows.filter(row => row.kind !== 'remove').length;
+  const firstOld = rows.find(row => row.oldLine !== undefined)?.oldLine;
+  const firstNew = rows.find(row => row.newLine !== undefined)?.newLine;
+  const oldStart = oldCount ? firstOld ?? 1 : Math.max(0, (firstNew ?? 1) - 1);
+  const newStart = newCount ? firstNew ?? 1 : Math.max(0, (firstOld ?? 1) - 1);
+  return `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
+}
+
+const PATCH_PREFIX: Record<DiffKind, string> = { add: '+', remove: '-', context: ' ', gap: ' ' };
+
+/** Git-style unified patch of the rows, in the format the native diff renderable parses; gaps start a new hunk. */
+export function toUnifiedPatch(path: string, rows: DiffRow[]): string {
+  const hunks = hunksOf(rows).flatMap(hunk => [hunkHeader(hunk), ...hunk.map(row => PATCH_PREFIX[row.kind] + row.text.replaceAll('\t', TAB_WIDTH))]);
+  return [`--- a/${path}`, `+++ b/${path}`, ...hunks].join('\n');
+}
+
+function viewFor(diff: FileDiff, width: number): 'split' | 'unified' {
+  return width >= SPLIT_MIN_WIDTH && diff.added > 0 && diff.removed > 0 ? 'split' : 'unified';
+}
+
+/** Collapsed-by-default diff block: header with +/- counts, then the native diff (unified, or split on wide terminals). */
 export function DiffView(props: { diff: FileDiff; expanded: boolean }) {
   const theme = useTheme();
-  const slice = createMemo(() => visibleRows(props.diff.rows, props.expanded));
-  const gutterWidth = createMemo(() => {
-    const widest = slice().shown.reduce((max, row) => Math.max(max, row.lineNumber ?? 0), 0);
-    return widest ? String(widest).length : 0;
-  });
-  const background = (kind: DiffKind) => kind === 'add' ? theme().diffAddedBg : kind === 'remove' ? theme().diffRemovedBg : undefined;
-  const foreground = (kind: DiffKind) => kind === 'add' ? theme().diffAdded : kind === 'remove' ? theme().diffRemoved : theme().diffContext;
-  const gutter = (row: DiffRow) => row.lineNumber === undefined ? ' '.repeat(gutterWidth() + 1) : String(row.lineNumber).padStart(gutterWidth()) + ' ';
+  const dimensions = useTerminalDimensions();
+  const style = useSyntaxStyle();
+  const [chosen, choose] = createSignal<boolean>();
+  const open = () => chosen() ?? props.expanded;
+  const toggle = useClick(() => choose(!open()));
+  const slice = createMemo(() => visibleRows(props.diff.rows, open()));
+  const patch = createMemo(() => toUnifiedPatch(props.diff.path, slice().shown));
+  const numbered = () => slice().shown.some(row => row.lineNumber !== undefined);
+  const lineBackground = (tint: string) => mix(theme().background, tint, 0.28);
   return (
     <box flexShrink={0} paddingLeft={2} marginTop={1}>
-      <text fg={theme().muted}>
-        {props.diff.path + ' '}
-        <span style={{ fg: theme().diffAdded }}>{'+' + props.diff.added}</span>
-        {' '}
-        <span style={{ fg: theme().diffRemoved }}>{'−' + props.diff.removed}</span>
-      </text>
-      <For each={slice().shown}>
-        {row => (
-          <box flexDirection="row" flexShrink={0} backgroundColor={background(row.kind)}>
-            <Show when={gutterWidth() > 0}>
-              <text fg={theme().lineNumber} flexShrink={0} wrapMode="none">{gutter(row)}</text>
-            </Show>
-            <text fg={foreground(row.kind)} flexShrink={0} wrapMode="none">{SIGNS[row.kind] + ' '}</text>
-            <text fg={row.kind === 'gap' ? theme().lineNumber : theme().text} flexGrow={1} flexShrink={1}>
-              {row.text.replaceAll('\t', TAB_WIDTH) || ' '}
-            </text>
-          </box>
-        )}
-      </For>
+      <box onMouseUp={toggle}>
+        <text fg={theme().muted}>
+          {props.diff.path + ' '}
+          <span style={{ fg: theme().diffAdded }}>{'+' + props.diff.added}</span>
+          {' '}
+          <span style={{ fg: theme().diffRemoved }}>{'−' + props.diff.removed}</span>
+        </text>
+      </box>
+      <diff diff={patch()} view={viewFor(props.diff, dimensions().width)} filetype={filetypeForPath(props.diff.path)}
+        syntaxStyle={style()} fg={theme().text} showLineNumbers={numbered()} wrapMode="word" width="100%"
+        addedBg={theme().diffAddedBg} removedBg={theme().diffRemovedBg} contextBg={theme().panel}
+        addedSignColor={theme().diffAdded} removedSignColor={theme().diffRemoved}
+        lineNumberFg={theme().lineNumber} lineNumberBg={theme().panel}
+        addedLineNumberBg={lineBackground(theme().success)} removedLineNumberBg={lineBackground(theme().error)} />
       <Show when={slice().hidden}>
-        <text fg={theme().muted}>{`… ${slice().hidden} more lines (ctrl+o to expand)`}</text>
+        <box onMouseUp={toggle}><text fg={theme().muted}>{`… ${slice().hidden} more lines (ctrl+o to expand)`}</text></box>
       </Show>
     </box>
   );

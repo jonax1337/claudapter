@@ -2,6 +2,18 @@
 
 Evidence: `docs/verification.md`. Check items only after verification; record blocked and untested cases explicitly. M1–M5 below preserve the original 0.1.0-rc.1 evidence; they do not imply that every flow has been rerun for the 0.2.0 extension.
 
+## TUI parity push: transcript, native parity, fallback UX, sub-agents, polish (in progress)
+- [x] Transcript parity: diff/edit/write blocks with tree-sitter highlighting and collapse, Bash/Read/Grep/Web rows, TodoWrite checklist, recorded permission rows, image rows with open/copy, fenced-code blocks, tables and wide-character-safe cell-width helpers (`layout.ts`), plus `slots` extension points. Fixture tests only.
+- [x] Native parity: `/btw` side questions, `/cd` with revalidation and trust renewal, Vim mode, kill ring and paste handling, `/account` `/privacy` `/upgrade` `/keymap` `/tutorial`, honest native-only dialogs; triage in `docs/parity-plan.md`.
+- [x] Fallback UX: typed route notices (switched/recovered/exhausted/interrupted/unprotected) without secrets, toast + transcript marker + per-turn badge + status countdown, user-initiated alt+r/b/p/f recovery, guided fallback setup with presets and dry run; replay after output stays blocked (gateway tests).
+- [x] Sub-agent isolation: `parent_tool_use_id` frames partitioned into per-agent streams with full capture, summary row, tab strip, navigation, addressed composer via the SendMessage relay, independent stop and Ctrl+B backgrounding; regression test proves no sub-agent text reaches main; bridge per-row reconcile (~25x faster at 2,000 entries).
+- [x] Visual polish: six contrast-tested themes with 256/16/`NO_COLOR` degradation, provider colors, shared motion timers, fuzzy-match highlighting, home provider/recent-session overview, `?` shortcut overlay, layered Esc semantics.
+- [x] Reviews: security review clean (no high/critical); its three findings fixed with tests (image temp cleanup on close, interrupted-fingerprint cap, steer/updateFallback target-auth refusal). Integration reviewer lost to repeated upstream API errors; coordinator re-verified the bridge entry-replacement assumption across mutation paths; Esc/Alt ordering stays on the live list.
+- [x] Integrated suites (final): `npm run check` 0 errors; node suite 254 passed / 0 failed / 5 skipped of 259; bun suite 204 passed across 10 files.
+- [ ] Live acceptance: fallback visibility and one-key recovery on a real limit, agent relay delivery and resume, a successful `/btw` answer, alt-key chords in Windows Terminal, themes/colors/`?`/Esc, resize during a busy turn.
+- [ ] Decisions and follow-ups: remove the superseded Ink TUI and its Ink/React dependencies (needs approval), dedupe main-stream handling against `LiveTranscript`, drop the duplicate agent line in the TasksStrip, unused-export cleanup.
+- [ ] Packed artifact rebuild and outside-checkout install test.
+
 ## OpenCode UI adoption
 - [x] Pin upstream source and retain MIT provenance; adapt home, composer, viewport and dialog structure.
 - [x] Bun/OpenTUI Windows renderer, responsive ASCII logo, Solid controller state bridge.

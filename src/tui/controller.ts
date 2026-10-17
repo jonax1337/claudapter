@@ -11,12 +11,20 @@ import { safeText } from './editor.js';
 import { tuiOptions } from './options.js';
 import { trustDirectory,isWorkspaceTrusted,isHomeDirectory } from './trust.js';
 import { assertCompatVersion,launchWorkspaceTrust,invokeCompat } from './compat.js';
+import { cleanupSavedImages } from './opencode/clipboard-image.js';
 import { TOKEN_HEADER } from '../gateway.js';
 import type { TranscriptEntry } from './panels.js';
 import { applyTaskMessage,applyBackgroundTasks,type TaskView } from './task-model.js';
+import { AgentStreams,type AgentStreamView } from './agent-streams.js';
+import { SEND_MESSAGE_TOOL,relayOutcome,relayPrompt,relayTarget } from './agent-relay.js';
+import { isSubagentMessage } from './transcript-model.js';
+import { changeWorkingDirectory,trustDirectoryPrompt } from './working-directory.js';
 import { StreamTrace } from './stream-trace.js';
-import { contentBlockEntry,historyEntries,isMetaMessage,promptText,sanitizeEntry,toolResultEntry,toolStartEntry } from './transcript-model.js';
+import { contentBlockEntry,historyEntries,isMetaMessage,permissionEntry,permissionOutcome,promptText,sanitizeEntry,suggestionRules,toolResultEntry,toolStartEntry,type PermissionRecord } from './transcript-model.js';
+import { imageBlocks } from './image-info.js';
 import type { UsageSnapshot } from '../usage.js';
+import type { RouteNotice } from '../route-events.js';
+import { RouteTracker,RETRY_PROMPT,type RouteMarker,type RouteOffer,type RouteToast,type RouteView } from './route-model.js';
 
 export interface FormField {key:string;label:string;type?:'text'|'number'|'boolean'|'json';required?:boolean;options?:string[];multi?:boolean;secret?:boolean}
 export type { TaskKind,TaskStatus,TaskView } from './task-model.js';
@@ -33,7 +41,13 @@ export interface TuiState {
   ready:boolean;busy:boolean;sessionId:string;model:string;permissionMode:string;status:string;
   entries:TranscriptEntry[];models:Model[];commands:any[];agents:any[];tasks:Record<string,TaskView>;sessionTitle?:string;
   hookActivity:{id:string;name:string;outcome:string}[];
-  context:any;usage?:UsageSnapshot;pending:PendingDialog[];lastRoute?:{requested:string;actual:string;provider:string};
+  context:any;usage?:UsageSnapshot;pending:PendingDialog[];lastRoute?:RouteView;
+  /** Actual routed model per gateway agent id; agent ids equal local_agent task ids. */
+  agentRoutes?:Record<string,RouteView>;routeOffers?:RouteOffer[];routeToast?:RouteToast;
+  /** Per sub-agent: revision of its own transcript, last action and relay state. */
+  agentStreams?:Record<string,AgentStreamView>;
+  /** Whether the engine offers SendMessage, the only path for a message to reach a sub-agent; unknown before init. */
+  agentMessaging?:boolean;
 }
 class InputQueue implements AsyncIterable<SDKUserMessage> {
   private values:SDKUserMessage[]=[];private nextValue?: (value:IteratorResult<SDKUserMessage>)=>void;private ended=false;
@@ -46,12 +60,15 @@ export class TuiController extends EventEmitter {
   revision=0;
   readonly state:TuiState={ready:false,busy:false,sessionId:'',model:'default',permissionMode:'default',status:'Starting Claude Code…',entries:[],models:[],commands:[],agents:[],tasks:{},hookActivity:[],context:null,pending:[]};
   session?:PreparedSession;query?:Query;claudePath='claude';
+  private routes=new RouteTracker();
   private input=new InputQueue();private closing=false;private generation=0;private streamIds=new Map<string,string>();
   private trace=new StreamTrace();private thinking:{entryId?:string;pendingTokens?:number}={};
   private decisions=new Map<string,{promise:Promise<any>;resolve:(value:any)=>void;cancel:unknown}>();
   private timer?:ReturnType<typeof setInterval>;private initialPromptConsumed=false;private trustQuery?:Query;private homeTrustAccepted=false;
-  readonly cwd=process.cwd();
-  constructor(readonly args:string[],readonly config:Config){super();}
+  cwd=process.cwd();
+  private readonly agents=new AgentStreams({changed:()=>this.changed(),taskOfTool:id=>this.taskOfTool(id)});
+  private readonly stoppedAgents=new Set<string>();private readonly relayIds=new Set<string>();
+  constructor(readonly args:string[],readonly config:Config){super();this.state.agentStreams=this.agents.views;}
   subscribe=(listener:()=>void)=>{this.on('change',listener);return()=>{this.off('change',listener);};};
   changed(){this.revision++;this.emit('change');}
   notice(text:string,error=false){this.upsert({id:randomUUID(),kind:error?'error':'notice',text:safeText(text)});}
@@ -64,7 +81,7 @@ export class TuiController extends EventEmitter {
   }
   private entry(id:string){return this.state.entries.find(e=>e.id===id);}
   private patchEntry(id:string,patch:Partial<TranscriptEntry>){const i=this.state.entries.findIndex(e=>e.id===id);if(i>=0){this.state.entries[i]={...this.state.entries[i],...patch};this.changed();}}
-  private resetTranscript(){this.state.entries=[];this.state.tasks={};this.trace.reset();this.thinking={};}
+  private resetTranscript(){this.state.entries=[];this.state.tasks={};this.trace.reset();this.thinking={};this.agents.reset();this.stoppedAgents.clear();this.relayIds.clear();}
   private updateUsage(){if(this.session)this.state.usage=this.session.gateway.manifest().usage;this.changed();}
 
   async start(resume?:string,fresh=false){
@@ -73,12 +90,14 @@ export class TuiController extends EventEmitter {
     let prepared:PreparedSession|undefined;let activeQuery:Query|undefined;
     try {
     this.claudePath=await installedClaudePath();if(generation!==this.generation)return;
+    this.routes=new RouteTracker(this.config.fallback);this.showRoutes();
     prepared=await prepareSession(this.args,this.config,{quiet:true,onEvent:e=>{
       if(generation!==this.generation)return;
-      if(e.event==='request'||e.event==='fallback'){if(!e.agent&&e.requestClass==='main')this.state.lastRoute={requested:e.requested,actual:e.actual,provider:e.provider};if(e.event==='fallback')this.notice((e.agent?'Agent '+e.agent:'Main')+': '+e.requested+' → '+e.actual+' ('+e.reason+')');}
+      if(e.event==='request'||e.event==='fallback'){const badge=this.routes.observeRequest(e);if(badge)this.showMarker(badge);this.showRoutes();}
       this.updateUsage();
     }});
     if(generation!==this.generation){await prepared.close();return;}this.session=prepared;
+    prepared.gateway.subscribeRoutes(notice=>{if(generation===this.generation)this.receiveRoute(notice);});
     const parsed=await tuiOptions(this.session.args,this.cwd);
     const options:Options={...parsed.options,cwd:this.cwd,pathToClaudeCodeExecutable:this.claudePath,
       env:{...this.session.env,...parsed.options.env},settings:this.session.settings,
@@ -146,6 +165,8 @@ export class TuiController extends EventEmitter {
 
   receive(message:any){
     if(message.session_id)this.state.sessionId=message.session_id;
+    if(isSubagentMessage(message)){this.receiveAgentMessage(message);return;}
+    if(message.type==='user'&&this.relayIds.has(message.uuid))return;
     const parent=message.parent_tool_use_id??'main';
     if(message.type==='stream_event')return this.receiveStream(message.event,parent);
     if(message.type==='assistant')this.receiveAssistant(message,parent);
@@ -155,6 +176,7 @@ export class TuiController extends EventEmitter {
       if(message.is_error)this.notice(message.result??(message.errors??[]).join('\n')??'Turn failed.',true);
       void this.refreshContext().catch(()=>{});this.updateUsage();
     }else if(message.type==='system')this.receiveSystem(message);
+    this.trackRelays(message);
     this.changed();
   }
 
@@ -224,6 +246,7 @@ export class TuiController extends EventEmitter {
 
   private receiveSystem(message:any){
     if(message.subtype==='init'){this.state.model=message.model??this.state.model;this.state.permissionMode=message.permissionMode??this.state.permissionMode;}
+    if(message.subtype==='init'&&Array.isArray(message.tools))this.state.agentMessaging=message.tools.includes(SEND_MESSAGE_TOOL);
     if(message.subtype==='commands_changed'&&Array.isArray(message.commands))this.state.commands=message.commands;
     if(message.subtype==='thinking_tokens')this.updateThinkingTokens(message.estimated_tokens);
     if(message.subtype==='hook_started'||message.subtype==='hook_response')this.receiveHook(message);
@@ -243,15 +266,60 @@ export class TuiController extends EventEmitter {
     if(['error','failed','failure','blocked','cancelled'].includes(activity.outcome)||message.exit_code>0)
       this.upsert({id:'hook-error:'+id,kind:'error',text:'Hook '+activity.name+': '+activity.outcome+((message.stderr||message.output)?'\n'+safeText(message.stderr||message.output).slice(0,2000):'')});
   }
+  /** Ties a task to the tool call that started it, in the main transcript or the spawning agent's own, and to its agent stream. */
   private linkTaskToTool(task:TaskView|undefined){
-    const tool=task?.toolUseId?this.entry('tool:'+task.toolUseId):undefined;
-    if(tool&&tool.taskId!==task!.id)this.patchEntry(tool.id,{taskId:task!.id});
+    if(!task?.toolUseId)return;
+    if(task.kind==='agent')this.agents.learn(task.toolUseId,task.id);
+    const tool=this.entry('tool:'+task.toolUseId);
+    if(tool&&tool.taskId!==task.id)this.patchEntry(tool.id,{taskId:task.id});
+    this.agents.linkTask(task.toolUseId,task.id);
+  }
+
+  // Sub-agents: own transcripts, relayed messages, stop and backgrounding. Routed models live in state.agentRoutes.
+  private receiveAgentMessage(message:any){this.agents.receive(message);}
+  /** Follows the main agent's SendMessage calls to agents with a pending relay, from the call to its own result. */
+  private trackRelays(message:any){
+    if(message.type!=='assistant'&&message.type!=='user')return;
+    const content=Array.isArray(message.message?.content)?message.message.content:[];
+    for(const block of content){
+      const id=block.type==='tool_use'?block.id:block.type==='tool_result'?block.tool_use_id:undefined;
+      const tool=id?this.entry('tool:'+id):undefined;
+      const agentId=tool&&relayTarget(tool);
+      const relay=agentId?this.state.agentStreams?.[agentId]?.relay:undefined;
+      if(!relay||relay.status==='delivered'||relay.status==='failed')continue;
+      this.agents.setRelay(agentId!,{...relay,...relayOutcome(tool!),at:Date.now()});
+    }
+  }
+  /** A copy of the live transcript of a sub-agent; empty until its first frame arrives. */
+  agentEntries(agentId:string):TranscriptEntry[]{return this.agents.entries(agentId);}
+  /**
+   * Sends the user's text to a sub-agent. The engine has no host path into a sub-agent's conversation, so the
+   * main agent is asked to call SendMessage; the relay state follows that call (see agent-relay.ts).
+   */
+  sendToAgent(agentId:string,text:string){
+    const message=text.trim();if(!message)return;
+    if(!this.state.ready||!this.query)throw new Error('Claude Code is still starting.');
+    if(this.state.agentMessaging===false)throw new Error('This Claude Code session has no SendMessage tool, so no sub-agent can receive messages.');
+    if(this.stoppedAgents.has(agentId))throw new Error('Claude Code does not deliver messages to an agent you stopped.');
+    const task=this.state.tasks[agentId];const label=task?.subagentType??task?.title??agentId;const uuid=randomUUID();
+    this.relayIds.add(uuid);
+    this.agents.add(agentId,{id:uuid,kind:'user',text:message});
+    this.agents.setRelay(agentId,{status:'queued',text:safeText(message),at:Date.now()});
+    this.upsert({id:uuid,kind:'user',text:'→ '+label+': '+message});
+    this.state.busy=true;this.state.status='Working';
+    this.input.push({type:'user',uuid,session_id:this.state.sessionId,parent_tool_use_id:null,message:{role:'user',content:relayPrompt(agentId,label,message)}});this.changed();
+  }
+  /** Moves a foreground agent to the background so the main agent can continue (and relay messages to it). */
+  async backgroundAgent(agentId:string){
+    const toolUseId=this.state.tasks[agentId]?.toolUseId;
+    if(!toolUseId||!this.query)throw new Error('This agent has no running tool call to move to the background.');
+    if(!await this.query.backgroundTasks(toolUseId))throw new Error('The agent is not running in the foreground.');
   }
 
   send(text:string,attachments:any[]=[]){
     if(!this.state.ready||!this.query)throw new Error('Claude Code is still starting.');
     if(!text.trim()&&!attachments.length)return;
-    const uuid=randomUUID();this.upsert({id:uuid,kind:'user',text:text+(attachments.length?'\n['+attachments.length+' attachment(s)]':'')});
+    const uuid=randomUUID();this.routes.startTurn(uuid);const images=imageBlocks(attachments),files=attachments.length-images.length;this.upsert({id:uuid,kind:'user',text:text+(files?'\n['+files+' attachment(s)]':''),...(images.length?{images}:{})});
     this.state.sessionTitle??=safeText(text).trim().replace(/\s+/g,' ').slice(0,SESSION_TITLE_LIMIT)||undefined;
     this.state.busy=true;this.state.status='Working';
     this.input.push({type:'user',uuid,session_id:this.state.sessionId,parent_tool_use_id:null,message:{role:'user',content:attachments.length?[{type:'text',text},...attachments]:text}});this.changed();
@@ -265,6 +333,27 @@ export class TuiController extends EventEmitter {
   async setModel(id:string){if(this.state.busy)throw new Error('Wait for the turn or interrupt before switching models.');await this.query!.setModel(id);this.state.model=id;await this.refreshContext();
     const effort=this.config.modelEffort?.[id];if(effort)await this.query!.applyFlagSettings({effortLevel:effort as 'low'|'medium'|'high'|'xhigh'|'max'});
     this.notice('Model selected for this session: '+id+(effort?' · effort '+effort:''));}
+  private receiveRoute(notice:RouteNotice){
+    const marker=this.routes.apply(notice);
+    if(marker)this.showMarker(marker);
+    this.showRoutes();
+  }
+  /** A notice entry, so renderers without route support still show the plain marker text. */
+  private showMarker(marker:RouteMarker){this.upsert({id:marker.id,kind:'notice',text:marker.text,route:marker} as TranscriptEntry);}
+  private showRoutes(){
+    this.state.lastRoute=this.routes.main;this.state.agentRoutes={...this.routes.agents};
+    this.state.routeOffers=[...this.routes.offers];this.state.routeToast=this.routes.toast;this.changed();
+  }
+  /** Runs a recovery step the user picked. A retry is a new, visible prompt: the gateway never replays the failed request. */
+  async runRouteOffer(action:'retry'|'back'|'pin'){
+    const offer=this.routes.offers.find(candidate=>candidate.action===action);
+    if(!offer||offer.action==='setup')throw new Error('No '+action+' option is available for the current route.');
+    const session=this.session;if(!session)throw new Error('Claude Code is still starting.');
+    if(offer.action==='pin'){await this.setModel(offer.model);return;}
+    if(offer.action==='back'){session.gateway.state.reset(offer.session);return;}
+    if(offer.target)session.gateway.state.steer({session:offer.session,requestClass:'main'},offer.requested,session.registry.resolve(offer.target));
+    this.send(RETRY_PROMPT);
+  }
   async refreshContext(){const q=this.query;if(!q)return;const context=await q.getContextUsage({detail:'summary'});if(q!==this.query)return;this.state.context=context;this.changed();}
   async refreshModels(){
     if(this.state.busy)throw new Error('Refresh model bindings between turns.');if(!this.session||!this.query)return;
@@ -289,7 +378,10 @@ export class TuiController extends EventEmitter {
   async rename(title:string){if(!this.state.sessionId)throw new Error('Send a message first.');await renameSession(this.state.sessionId,title,{dir:this.cwd});this.state.sessionTitle=safeText(title);this.notice('Session renamed: '+title);}
   async fork(){if(!this.state.sessionId)throw new Error('Send a message first.');const result=await forkSession(this.state.sessionId,{dir:this.cwd});await this.resume(result.sessionId);}
   async removeSession(id:string){if(id===this.state.sessionId)throw new Error('Close the current session before deleting it.');await deleteSession(id,{dir:this.cwd});}
-  async stopTask(id:string){await this.query!.stopTask(id);this.notice('Stop requested for '+id);}
+  async stopTask(id:string){
+    await this.query!.stopTask(id);this.stoppedAgents.add(id);this.notice('Stop requested for '+id);
+    if(this.state.agentStreams?.[id])this.agents.add(id,{id:'notice:stop:'+randomUUID(),kind:'notice',text:'Stop requested by you'});
+  }
   async exportTranscript(path:string){const result=await invokeCompat(this.query!,'exportConversation');await writeFile(resolve(this.cwd,path),result.text,{flag:'wx',mode:0o600});}
   async branchAt(messageId:string,restoreFiles=false){
     if(this.state.busy)throw new Error('Interrupt or finish the current turn first.');
@@ -298,7 +390,7 @@ export class TuiController extends EventEmitter {
   }
   async updateFallback(rules:unknown){
     const candidate=validateConfig({...this.config,fallback:rules});
-    for(const rule of candidate.fallback.filter(r=>r.enabled)){this.session!.registry.resolve(rule.from);for(const id of rule.targets)this.session!.registry.resolve(id);}
+    for(const rule of candidate.fallback.filter(r=>r.enabled)){this.session!.registry.resolve(rule.from);for(const id of rule.targets){const model=this.session!.registry.resolve(id);if(model.auth!=='authenticated')throw new Error('Fallback target is not signed in: '+id);}}
     await saveConfig(candidate);this.config.fallback.splice(0,this.config.fallback.length,...candidate.fallback);this.notice('Fallback rules saved and applied to this launcher.');this.changed();
   }
   async updateDefaultModel(model:string|undefined){
@@ -319,7 +411,7 @@ export class TuiController extends EventEmitter {
   }
   /** Rebuild the transcript of a saved session: its newest entries only, with tool calls closed. */
   async restore(id:string){
-    const history=historyEntries(await getSessionMessages(id,{dir:this.cwd}) as any[]);
+    const history=historyEntries((await getSessionMessages(id,{dir:this.cwd}) as any[]).filter(message=>!isSubagentMessage(message)));
     this.state.entries=history.entries.map(sanitizeEntry);
     this.state.sessionTitle=await this.savedSessionTitle(id);
     this.notice('Resumed '+id+'. Existing native history retained.');
@@ -336,7 +428,8 @@ export class TuiController extends EventEmitter {
    */
   async agentTranscript(taskId:string):Promise<TranscriptEntry[]>{
     if(!this.state.sessionId)return [];
-    const reported=this.trace.agentOf(this.state.tasks[taskId]?.toolUseId);
+    const toolUseId=this.state.tasks[taskId]?.toolUseId;
+    const reported=this.trace.agentOf(toolUseId)??this.agents.reportedAgent(toolUseId);
     for(const agentId of new Set([taskId,reported])){
       if(!agentId)continue;
       const messages=await getSubagentMessages(this.state.sessionId,agentId,{dir:this.cwd}).catch(()=>[]);
@@ -355,6 +448,21 @@ export class TuiController extends EventEmitter {
     const current=PERMISSION_CYCLE.indexOf(this.state.permissionMode as UserPermissionMode);
     const next=PERMISSION_CYCLE[(current+1)%PERMISSION_CYCLE.length];
     await this.setPermissionMode(next);return next;
+  }
+
+  /** `/cd`: moves the live session to another project after revalidating its settings and renewing trust. */
+  async changeDirectory(input:string):Promise<string>{
+    if(this.state.busy)throw new Error('Interrupt or finish the current turn before changing directory.');
+    const query=this.query,session=this.session;
+    if(!query||!session||!this.state.ready)throw new Error('Claude Code is still starting.');
+    const change=await changeWorkingDirectory({cwd:this.cwd,query,args:this.args,config:this.config,registry:session.registry,
+      confirmTrust:directory=>this.ask({id:'directory-trust:'+randomUUID(),title:'Do you trust this project?',description:trustDirectoryPrompt(directory),fields:[],
+        choices:[{label:'Stay in the current directory',value:false},{label:'Trust and switch',value:true}],defaultIndex:0},undefined,false)},input);
+    if(!change.changed){this.notice('Already working in '+change.cwd);return change.cwd;}
+    process.chdir(change.cwd);this.cwd=change.cwd;
+    if(query===this.query){this.state.agents=await query.supportedAgents();this.state.commands=await query.supportedCommands();await this.refreshContext();}
+    this.notice('Working directory changed to '+change.cwd+'. Saved sessions now list the conversations of this directory.');this.changed();
+    return change.cwd;
   }
 
   ask(dialog:PendingDialog,signal:AbortSignal|undefined,cancel:unknown):Promise<any>{
@@ -389,9 +497,12 @@ export class TuiController extends EventEmitter {
     }
     const choices:{label:string;value:unknown}[]=[{label:'Deny',value:'deny'},{label:'Allow once',value:'allow'}];
     const sessionSuggestions=Array.isArray(meta.suggestions)&&meta.suggestions.every((s:any)=>s.type==='addRules'&&s.behavior==='allow')?meta.suggestions:[];
+    const record=(permission:PermissionRecord)=>this.upsert(permissionEntry(meta.requestId,name,input,{agentId:meta.agentID,blockedPath:meta.blockedPath,...permission}));
+    record({decision:'pending'});
     if(!meta.suppressAlwaysAllowRule&&sessionSuggestions.length)choices.push({label:'Allow shown rules for this session',value:'session'});
     const answer=await this.ask({id:meta.requestId,title:meta.title??'Permission required: '+name,
       description:[meta.description,meta.decisionReason,meta.agentID?'Agent: '+meta.agentID:'',meta.blockedPath?'Path: '+meta.blockedPath:'',JSON.stringify(input,null,2),!meta.suppressAlwaysAllowRule&&sessionSuggestions.length?'Optional session rules:\n'+JSON.stringify(sessionSuggestions.map((s:any)=>({...s,destination:'session'})),null,2):''].filter(Boolean).join('\n'),fields:[],choices,defaultIndex:0},meta.signal,'deny');
+    record({...permissionOutcome(answer,Boolean(meta.signal?.aborted)),...(answer==='session'?{rules:suggestionRules(sessionSuggestions)}:{})});
     if(answer==='allow'||answer==='session')return {behavior:'allow',updatedInput:input,toolUseID:meta.toolUseID,...(answer==='session'?{updatedPermissions:sessionSuggestions.map((s:any)=>({...s,destination:'session'}))}:{})};
     return {behavior:'deny',message:'Denied by the user in Claudapter.',toolUseID:meta.toolUseID};
   }
@@ -411,5 +522,5 @@ export class TuiController extends EventEmitter {
     this.input.close();this.trustQuery?.close();this.trustQuery=undefined;this.query?.close();this.query=undefined;const session=this.session;this.session=undefined;
     this.state.ready=false;this.state.busy=false;this.state.status='Closed';this.state.context=null;delete this.state.lastRoute;this.changed();await session?.close();
   }
-  async close(){this.homeTrustAccepted=false;await this.stopEngine();this.removeAllListeners();}
+  async close(){this.homeTrustAccepted=false;await this.stopEngine();await cleanupSavedImages();this.removeAllListeners();}
 }

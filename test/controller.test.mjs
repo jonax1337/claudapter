@@ -39,9 +39,9 @@ test('streamed and completed assistant blocks reconcile once with independent ag
   c.receive(stream('agent-tool',{type:'message_start',message:{id:'agent-message'}}));
   c.receive(stream('agent-tool',{type:'content_block_start',index:0,content_block:{type:'text',text:'Agent'}}));
   c.receive({type:'assistant',parent_tool_use_id:null,message:{id:'main-message',content:[{type:'text',text:'Hello world'}]}});
-  assert.equal(c.state.entries.filter(entry=>entry.kind==='assistant').length,2);
+  assert.equal(c.state.entries.filter(entry=>entry.kind==='assistant').length,1);
   assert.equal(c.state.entries.find(entry=>entry.id==='block:main-message:0').text,'Hello world');
-  assert.equal(c.state.entries.find(entry=>entry.id==='block:agent-message:0').agent,'agent-tool');
+  assert.equal(c.agentEntries('agent-tool').find(entry=>entry.id==='block:agent-message:0').text,'Agent');
   assert.equal(c.state.sessionId,'fixture-session');
 });
 
@@ -200,7 +200,7 @@ async function startupFixture(t,args=[],overrides={}) {
   };
   h.prepareSession=async sessionArgs=>{
     const session={args:sessionArgs,env:{FIXTURE:'only'},settings:'fixture-settings-with-hooks.json',claudeVersion:'2.1.301',
-      plugin:'fixture-plugin',registry:{list:()=>[]},gateway:{manifest:()=>({usage:undefined})},closed:false,
+      plugin:'fixture-plugin',registry:{list:()=>[]},gateway:{manifest:()=>({usage:undefined}),subscribeRoutes:()=>()=>{}},closed:false,
       async close(){this.closed=true;}};
     h.prepared.push(session);return session;
   };

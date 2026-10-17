@@ -4,7 +4,9 @@ import type { SDKSessionInfo } from '@anthropic-ai/claude-agent-sdk';
 import { SessionPicker, type SessionPickerActions } from '../src/tui/opencode/sessions';
 import { Menu, type MenuItem } from '../src/tui/opencode/menu';
 import { createActions, type ActionDialogs } from '../src/tui/opencode/actions';
-import { fuzzyScore, rankItems, toRows } from '../src/tui/opencode/list-model';
+import { fuzzyScore, highlightRuns, matchPositions, rankItems, toRows } from '../src/tui/opencode/list-model';
+import { themeMenuItems } from '../src/tui/opencode/theme-menu';
+import { providerSummaries, recentSessions } from '../src/tui/opencode/home-model';
 import {
   groupSessions, latestOtherSession, relativeTime, resolveSession, searchSessions, sessionGroup, sessionTitle,
 } from '../src/tui/opencode/sessions-model';
@@ -385,4 +387,120 @@ test('/tasks opens the task panel when wired and /sessions opens the picker pane
   await harness.execute('/sessions');
   await harness.execute('/resume bbbb');
   expect([tasks, panels]).toEqual([1, 2]);
+});
+
+test('match positions mark the substring or fuzzy subsequence that made an item match', () => {
+  expect(matchPositions('sag', '/usage')).toEqual([2, 3, 4]);
+  expect(matchPositions('ctx', '/context')).toEqual([1, 4, 6]);
+  expect(matchPositions('mod use', '/model usage')).toEqual([1, 2, 3, 7, 8, 11]);
+  expect(matchPositions('', '/usage')).toEqual([]);
+  expect(matchPositions('zzz', '/usage')).toEqual([]);
+  expect(highlightRuns('/usage', [1, 2, 3])).toEqual([
+    { text: '/', match: false }, { text: 'usa', match: true }, { text: 'ge', match: false },
+  ]);
+});
+
+test('menu opens on the current item, previews while browsing and restores on dismissal', async () => {
+  const previews: string[] = [];
+  const chosen: string[] = [];
+  const closed: string[] = [];
+  const item = (title: string, current = false): MenuItem =>
+    ({ title, current, preview: () => { previews.push(title); }, run: () => { chosen.push(title); } });
+  const view = await testRender(() => <Menu title="Appearance" items={[item('midnight'), item('ocean', true), item('ember')]}
+    onClose={() => closed.push('closed')} />, { width: 80, height: 24 });
+  try {
+    await view.renderOnce();
+    expect(view.captureCharFrame()).toContain('● ocean');
+    view.mockInput.pressArrow('down');
+    await view.renderOnce();
+    expect(previews).toEqual(['ember']);
+    view.mockInput.pressEscape();
+    await settle(view);
+    expect(previews).toEqual(['ember', 'ocean']);
+    expect(closed).toEqual(['closed']);
+    expect(chosen).toEqual([]);
+  } finally { view.renderer.destroy(); }
+});
+
+test('escape clears a menu search before it closes the menu', async () => {
+  const closed: string[] = [];
+  const view = await testRender(() => <Menu title="Commands" items={[{ title: '/model', run() {} }, { title: '/usage', run() {} }]}
+    onClose={() => closed.push('closed')} />, { width: 80, height: 24 });
+  try {
+    await view.renderOnce();
+    await view.mockInput.typeText('zzz');
+    let frame = await settle(view);
+    expect(frame).toContain('No matches for “zzz”');
+    expect(frame).toContain('esc clear');
+    view.mockInput.pressEscape();
+    frame = await settle(view);
+    expect(closed).toEqual([]);
+    expect(frame).toContain('/usage');
+    view.mockInput.pressEscape();
+    await settle(view);
+    expect(closed).toEqual(['closed']);
+  } finally { view.renderer.destroy(); }
+});
+
+test('long menu titles are truncated to the dialog instead of overflowing it', async () => {
+  const long = 'Checkpoint ' + 'x'.repeat(120);
+  const view = await testRender(() => <Menu title="Checkpoints" items={[{ title: long, hint: 'ctrl+k', run() {} }]} onClose={() => {}} />,
+    { width: 80, height: 24 });
+  try {
+    await view.renderOnce();
+    const row = view.captureCharFrame().split('\n').find(line => line.includes('Checkpoint x'))!;
+    expect(row).toContain('…');
+    expect(row).toContain('ctrl+k');
+  } finally { view.renderer.destroy(); }
+});
+
+test('theme picker items mark the saved theme and preview without saving', () => {
+  const previewed: string[] = [];
+  const applied: string[] = [];
+  const items = themeMenuItems({ active: 'ember', preview: name => previewed.push(name), apply: name => { applied.push(name); } });
+  expect(items.map(entry => entry.title)).toEqual(['midnight', 'ocean', 'ember', 'daylight', 'terminal', 'contrast']);
+  expect(items.filter(entry => entry.current).map(entry => entry.title)).toEqual(['ember']);
+  expect(items.every(entry => entry.description)).toBe(true);
+  items[3].preview!();
+  void items[1].run();
+  expect(previewed).toEqual(['daylight']);
+  expect(applied).toEqual(['ocean']);
+});
+
+test('session search highlights matches and escape clears the query first', async () => {
+  const { actions } = fakeActions();
+  const closed: string[] = [];
+  const view = await testRender(() => <SessionPicker actions={actions} now={() => NOW} onClose={() => closed.push('closed')} />,
+    { width: 100, height: 30 });
+  try {
+    await settle(view);
+    await view.mockInput.typeText('billing');
+    let frame = await settle(view);
+    expect(frame).toContain('Billing cleanup');
+    expect(frame).not.toContain('Fix login redirect');
+    view.mockInput.pressEscape();
+    frame = await settle(view);
+    expect(closed).toEqual([]);
+    expect(frame).toContain('Fix login redirect');
+    view.mockInput.pressEscape();
+    await settle(view);
+    expect(closed).toEqual(['closed']);
+  } finally { view.renderer.destroy(); }
+});
+
+test('home overview orders first-class providers and flags missing sign-in only when every model lacks it', () => {
+  const summaries = providerSummaries([
+    { provider: 'zai', auth: 'authenticated' },
+    { provider: 'custom', auth: 'missing' },
+    { provider: 'chatgpt', auth: 'expired' },
+    { provider: 'chatgpt', auth: 'expired' },
+    { provider: 'anthropic', auth: 'unknown' },
+  ]);
+  expect(summaries).toEqual([
+    { provider: 'anthropic', needsSignIn: false },
+    { provider: 'chatgpt', needsSignIn: true },
+    { provider: 'zai', needsSignIn: false },
+    { provider: 'custom', needsSignIn: true },
+  ]);
+  expect(recentSessions(FIXTURES, FIXTURES[0].sessionId).map(entry => entry.sessionId.slice(0, 4))).toEqual(['bbbb', 'cccc', 'dddd']);
 });
