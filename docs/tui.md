@@ -11,11 +11,48 @@ claudapter usage --refresh
 claudapter usage --json
 ```
 
+## OpenTUI migration status
+
+`claudapter tui` now launches the bundled OpenTUI/Solid interface using Bun
+>=1.3.14 on PATH. Native `claudapter` still uses Node and does not load the UI.
+Developers also need Bun to build the UI bundle. Source attribution is in
+[OpenCode provenance](opencode-provenance.md).
+
+The new interface includes a responsive ASCII wordmark, searchable command palette,
+controller-backed dialogs and command actions. The historical details below describe
+the earlier Ink implementation and are not a blanket parity claim for the new UI.
+Frozen selection during streaming, styled Markdown fidelity, theme coverage and every
+administrative interaction still require full acceptance. The earlier Ink source
+remains temporarily for regression comparison, not as a public mode.
+
+## Branded interface
+
+An empty conversation shows an original five-row CLAUDAPTER wordmark when the
+terminal has enough space, with a compact fallback for small windows. Conversation
+history replaces the large banner while the project header stays visible. The
+composer has an empty-state hint, menus have a framed surface and highlighted
+selection, and transcript/code colors follow the selected palette. Existing
+shortcuts, permission defaults and engine configuration are unchanged.
+
 ## Everyday controls
 
 Enter sends a prompt. Shift+Enter or Ctrl+J inserts a newline. Ctrl+P opens the
 searchable command palette. F2 opens models, F3 agents, F4 usage and F6 themes.
-PageUp/PageDown scroll the transcript, usage and context panels. Escape closes
+Drag with the left mouse button over transcript text to select it, then press
+Ctrl+C to copy. Selection is highlighted and freezes the visible transcript while
+new output arrives. Escape clears it; scrolling clears it and continues browsing.
+Without a selection Ctrl+C retains its interrupt/exit behavior. Mouse-wheel
+scrolling remains enabled, with no mode switch required.
+PageUp/PageDown and the mouse wheel scroll the transcript, usage and context
+panels. Browsing history stays anchored while new output arrives; End (with an
+empty composer) returns to live output and Home goes to the beginning.
+`/details` expands or collapses tool inputs/output; failed tools keep their
+error details visible. Assistant Markdown supports inline emphasis/code, lists,
+quotes, links and fenced blocks; tables use labelled rows on narrow terminals.
+Routine hook starts/successes live under `/hooks` → Recent hook activity, not
+in the conversation. Hook failures remain visible. `/permissions` offers a
+session mode picker without implicitly enabling unrestricted execution.
+Escape closes
 an overlay; Ctrl+C interrupts work, or twice while idle exits. Permission and
 trust dialogs default to decline. Questions support choices, multi-selection
 and a typed answer; Tab moves between fields and the final decision.
@@ -77,7 +114,7 @@ It does not reconstruct traffic from before this release or from other clients.
 
 The public SDK handles tools, streaming and session operations. Some native
 special dialogs require private methods, pinned to SDK **0.3.301** and installed
-Claude Code **2.1.301**. Those methods refuse an unknown version. This is tested
+Claude Code **2.1.301 or 2.1.302**. Those methods refuse an unknown version. This is tested
 compatibility, not an upstream guarantee.
 
 Full native feature parity is **not complete**. Cloud/environment/artifact

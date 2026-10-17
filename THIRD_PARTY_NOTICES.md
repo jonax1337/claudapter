@@ -4,7 +4,14 @@ The Messages/Responses translator in `src/translate.ts` and its original regress
 tests are adapted from Rookery Agent, copyright (c) 2026 Jonas Laux, MIT License.
 The full applicable MIT notice is included in `LICENSE`.
 
-The optional TUI depends on React, Ink, @inkjs/ui and string-width, under their
+`claudapter tui` adapts parts of the OpenCode terminal interface
+(https://github.com/anomalyco/opencode, commit `07bbd0fd166c82d87e79f053dc70e6fdb66f88ac`),
+copyright (c) 2025 opencode, MIT License. Adapted files and the full license text are in
+`docs/opencode-provenance.md`. It is built on @opentui/core, @opentui/solid and
+solid-js (MIT); Solid and @opentui/solid are compiled into the shipped bundle.
+Claudapter is not affiliated with or endorsed by OpenCode.
+
+The earlier TUI sources still in the repository depend on React, Ink, @inkjs/ui and string-width, under their
 respective MIT licenses, and the Anthropic Claude Agent SDK under its own terms:
 
 © Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements

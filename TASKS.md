@@ -2,6 +2,40 @@
 
 Evidence: `docs/verification.md`. Check items only after verification; record blocked and untested cases explicitly. M1–M5 below preserve the original 0.1.0-rc.1 evidence; they do not imply that every flow has been rerun for the 0.2.0 extension.
 
+## OpenCode UI adoption
+- [x] Pin upstream source and retain MIT provenance; adapt home, composer, viewport and dialog structure.
+- [x] Bun/OpenTUI Windows renderer, responsive ASCII logo, Solid controller state bridge.
+- [x] Command palette and existing controller/admin action integration; native launch unchanged.
+- [x] Bundle build, external package install, real model selection and short response, mouse copy/paste-back.
+- [x] Ten UI tests plus 159 existing tests passing (5 skipped); TypeScript checks.
+- [x] Chat message layout adapted: user rail, native Markdown assistant text, reasoning rail, inline tool rows with summaries, error rail. Fixture frames only; not yet seen live.
+- [ ] Remaining upstream session features: diff/edit/write block tools, inline permission rows, images, sub-agent groups and complete interaction parity.
+- [ ] Live approval/elicitation, resize, wheel, selection-during-streaming, resume and interruption acceptance.
+- [ ] Theme/Markdown fidelity, removal of superseded Ink code after parity, packed public `claudapter tui` entry verified.
+- [ ] Release candidate approval; the migration is not fully accepted.
+
+## Selection and version compatibility fixes
+- [x] Visible transcript drag selection and Ctrl+C copy without removing wheel scrolling.
+- [x] Actual Windows Terminal drag/copy/paste-back verified; Unicode and streaming regression tests.
+- [x] Explicit CLI 2.1.302 compatibility with real isolated readers and native writer tests.
+- [ ] Live OAuth and all native dialog variants on 2.1.302; not implied by reader tests.
+
+## Branded Ink shell
+- [x] Original responsive welcome banner, compact project header and composer hint.
+- [x] Shared palette/Ink UI spinner theme, framed menus and selection highlight.
+- [x] Shared shell/scroll dimensions; 157 tests passed, 5 skipped.
+- [x] Actual Windows Terminal error surface and Ctrl+P palette visually inspected.
+- [ ] Connected welcome/chat visual acceptance: inherited base URL blocked startup.
+- [ ] Expanded visual acceptance and updated packed installation; not a release candidate.
+
+## TUI presentation follow-up
+- [x] Routine hook lifecycle moved out of chat; failures retained and hook activity inspectable.
+- [x] Markdown spans, compact tool summaries, simpler framing and permission-mode picker.
+- [x] Anchored transcript browsing, mouse-wheel input and paging covered by isolated renderer tests.
+- [x] Typecheck and isolated suite: 152 passed, 5 skipped; packed CLI installed outside checkout.
+- [ ] Real Windows terminal visual, wheel, resize and terminal-cleanup acceptance.
+- [ ] Installed updated TUI live-session acceptance; not yet a verified release candidate.
+
 ## M1: real protocol spike
 - [x] Read the entire mandate; inventory installed tools and reference license.
 - [x] Verify current official Claude/Codex interfaces and inspect reference transport.

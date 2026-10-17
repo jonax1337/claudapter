@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, posix, win32 } from 'node:path';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 
-export const compatVersions = { sdk: '0.3.301', claude: '2.1.301' } as const;
+export const compatVersions = { sdk: '0.3.301', claude: ['2.1.301', '2.1.302'] } as const;
 const require = createRequire(import.meta.url);
 const installedSdkVersion: string = JSON.parse(readFileSync(join(dirname(require.resolve('@anthropic-ai/claude-agent-sdk')), 'package.json'), 'utf8')).version;
 export const compatReadMethods = [
@@ -27,10 +27,15 @@ function mutationArgs(args: unknown, keys: string[]): asserts args is Record<str
   if (!isRecord(args) || args.confirmed !== true || Object.keys(args).some(key => key !== 'confirmed' && !keys.includes(key))) throw new Error('This native operation requires explicit confirmation and valid arguments.');
 }
 
+export function isCompatVersion(claudeVersion: unknown): boolean {
+  return installedSdkVersion === compatVersions.sdk && typeof claudeVersion === 'string'
+    && (compatVersions.claude as readonly string[]).includes(claudeVersion);
+}
+
 /** Private SDK support is deliberately disabled on every unverified SDK/CLI pair. */
 export function assertCompatVersion(claudeVersion: unknown): void {
-  if (installedSdkVersion !== compatVersions.sdk || claudeVersion !== compatVersions.claude) {
-    throw new Error(`Native dialog compatibility requires SDK ${compatVersions.sdk} and Claude Code ${compatVersions.claude}; installed ${installedSdkVersion} / ${String(claudeVersion ?? 'unknown')}.`);
+  if (!isCompatVersion(claudeVersion)) {
+    throw new Error(`Native dialog compatibility requires SDK ${compatVersions.sdk} and Claude Code ${compatVersions.claude.join(' or ')}; installed ${installedSdkVersion} / ${String(claudeVersion ?? 'unknown')}.`);
   }
 }
 

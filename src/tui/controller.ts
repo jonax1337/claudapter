@@ -23,6 +23,7 @@ export interface PendingDialog {
 export interface TuiState {
   ready:boolean;busy:boolean;sessionId:string;model:string;permissionMode:string;status:string;
   entries:TranscriptEntry[];models:Model[];commands:any[];agents:any[];tasks:Record<string,any>;
+  hookActivity:{id:string;name:string;outcome:string}[];
   context:any;usage?:UsageSnapshot;pending:PendingDialog[];lastRoute?:{requested:string;actual:string;provider:string};
 }
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -34,7 +35,7 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
 
 export class TuiController extends EventEmitter {
   revision=0;
-  readonly state:TuiState={ready:false,busy:false,sessionId:'',model:'default',permissionMode:'default',status:'Starting Claude Code…',entries:[],models:[],commands:[],agents:[],tasks:{},context:null,pending:[]};
+  readonly state:TuiState={ready:false,busy:false,sessionId:'',model:'default',permissionMode:'default',status:'Starting Claude Code…',entries:[],models:[],commands:[],agents:[],tasks:{},hookActivity:[],context:null,pending:[]};
   session?:PreparedSession;query?:Query;claudePath='claude';
   private input=new InputQueue();private closing=false;private generation=0;private streamIds=new Map<string,string>();
   private decisions=new Map<string,{promise:Promise<any>;resolve:(value:any)=>void;cancel:unknown}>();
@@ -49,7 +50,7 @@ export class TuiController extends EventEmitter {
 
   async start(resume?:string,fresh=false){
     const generation=++this.generation;
-    this.closing=false;this.input=new InputQueue();this.state.ready=false;this.state.status='Connecting to installed Claude Code…';this.changed();
+    this.closing=false;this.input=new InputQueue();this.state.hookActivity=[];this.state.ready=false;this.state.status='Connecting to installed Claude Code…';this.changed();
     let prepared:PreparedSession|undefined;let activeQuery:Query|undefined;
     try {
     this.claudePath=await installedClaudePath();if(generation!==this.generation)return;
@@ -94,7 +95,8 @@ export class TuiController extends EventEmitter {
         assertCompatVersion(prepared.claudeVersion);
         if(homeWorkspace){this.homeTrustAccepted=true;this.notice('Home directory trusted for this TUI session only.');}
         else{
-        const trustQuery=query({prompt:new InputQueue(),options:{cwd:this.cwd,pathToClaudeCodeExecutable:this.claudePath,env:this.session.env,persistSession:false,settingSources:[],plugins:[],mcpServers:{},strictMcpConfig:true,...launchWorkspaceTrust(directory,true)}});this.trustQuery=trustQuery;
+        // Claude Code only records trust when cwd and the trusted directory match exactly, including Windows path case.
+        const trustQuery=query({prompt:new InputQueue(),options:{cwd:directory,pathToClaudeCodeExecutable:this.claudePath,env:this.session.env,persistSession:false,settingSources:[],plugins:[],mcpServers:{},strictMcpConfig:true,...launchWorkspaceTrust(directory,true)}});this.trustQuery=trustQuery;
         try{const handshake=await trustQuery.initializationResult();if(!(handshake as any).workspace_trust_recorded&&!await isWorkspaceTrusted(directory))throw new Error('Claude Code did not acknowledge workspace trust.');}
         finally{trustQuery.close();if(this.trustQuery===trustQuery)this.trustQuery=undefined;}
         this.notice('Project trust recorded by Claude Code. Loading trusted configuration.');
@@ -166,11 +168,20 @@ export class TuiController extends EventEmitter {
     }else if(message.type==='system'){
       if(message.subtype==='init'){this.state.model=message.model??this.state.model;this.state.permissionMode=message.permissionMode??this.state.permissionMode;}
       if(message.subtype==='commands_changed'&&Array.isArray(message.commands))this.state.commands=message.commands;
-      if(message.subtype==='hook_started'||message.subtype==='hook_response')this.notice('Hook '+(message.hook_name??message.hook_event??'')+': '+(message.subtype==='hook_started'?'started':message.outcome??'completed'));
+      if(message.subtype==='hook_started'||message.subtype==='hook_response'){
+        const id=message.hook_id??message.uuid??randomUUID();
+        const activity={id,name:safeText(message.hook_name??message.hook_event??'Hook'),outcome:safeText(message.subtype==='hook_started'?'running':message.outcome??'completed')};
+        const previous=this.state.hookActivity.findIndex(hook=>hook.id===id);
+        if(previous<0)this.state.hookActivity.push(activity);else this.state.hookActivity[previous]=activity;
+        if(this.state.hookActivity.length>100)this.state.hookActivity.splice(0,this.state.hookActivity.length-100);
+        if(['error','failed','failure','blocked','cancelled'].includes(activity.outcome)||message.exit_code>0)
+          this.upsert({id:'hook-error:'+id,kind:'error',text:'Hook '+activity.name+': '+activity.outcome+((message.stderr||message.output)?'\n'+safeText(message.stderr||message.output).slice(0,2000):'')});
+      }
       if(message.subtype?.startsWith('task_')||message.subtype==='background_tasks_changed'){
         if(message.task_id)this.state.tasks[message.task_id]={...this.state.tasks[message.task_id],...message};
         if(message.tasks)for(const task of message.tasks)this.state.tasks[task.task_id??task.id]=task;
       }
+      if(message.subtype==='informational'&&(message.level==='warning'||message.level==='suggestion'||message.halt))this.notice(message.content??'Engine warning',Boolean(message.halt));
       if(message.subtype==='local_command_output')this.notice(message.content??message.output??JSON.stringify(message));
       if(['notification','compact_boundary','permission_denied','api_retry','model_refusal_fallback'].includes(message.subtype))this.notice(message.message??message.content??message.description??message.subtype,message.subtype==='permission_denied');
       if(message.subtype==='conversation_reset'){this.state.entries=[];this.state.tasks={};}

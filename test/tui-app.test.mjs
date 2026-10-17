@@ -5,6 +5,14 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { App } from '../dist/tui/app.js';
+import { selectedText } from '../dist/tui/selection.js';
+
+test('selection copies exact forward/reverse cell ranges without splitting Unicode', () => {
+  const lines = [{text:'A界éZ'}, {text:'second row'}];
+  const start = {row:0,column:1}, end = {row:1,column:5};
+  assert.equal(selectedText({lines,start,end,dragging:false}), '界éZ\nsecond');
+  assert.equal(selectedText({lines,start:end,end:start,dragging:false}), '界éZ\nsecond');
+});
 
 class FakeController extends EventEmitter {
   revision = 0;
@@ -25,6 +33,30 @@ async function setup(t, controller = new FakeController()) {
   await tick();
   return { controller, view, async key(value) { view.stdin.write(value); await tick(); } };
 }
+test('welcome has a block banner that gives way to the conversation', async t => {
+  const ui = await setup(t);
+  assert.match(ui.view.lastFrame(), /█/);
+  assert.match(ui.view.lastFrame(), /Your workspace\. Your models\./);
+  ui.controller.state.entries = [{ id: 'hello', kind: 'user', text: 'Hello there' }];
+  ui.controller.changed(); await tick();
+  assert.doesNotMatch(ui.view.lastFrame(), /█/);
+  assert.match(ui.view.lastFrame(), /Hello there/);
+});
+
+for (const [columns, rows] of [[120,40], [100,30], [80,24], [48,18]]) {
+  test(`branded shell fits ${columns}x${rows} with a multiline draft`, async t => {
+    const ui = await setup(t);
+    Object.defineProperty(ui.view.stdout, 'columns', { configurable: true, get: () => columns });
+    Object.defineProperty(ui.view.stdout, 'rows', { configurable: true, get: () => rows });
+    ui.view.stdout.emit('resize'); await tick();
+    await ui.key('first line'); await ui.key('\n'); await ui.key('second line');
+    const lines = ui.view.lastFrame().split('\n');
+    assert.ok(lines.length <= rows);
+    assert.ok(lines.every(line => stringWidth(line) <= columns));
+    assert.match(ui.view.lastFrame(), /second line/);
+  });
+}
+
 const approval = fields => ({ id: 'approval', title: 'Permission required: Write', description: 'Modify fixture.txt', fields: fields ?? [],
   choices: [{ label: 'Deny', value: 'deny' }, { label: 'Allow once', value: 'allow' }], defaultIndex: 0 });
 
@@ -110,6 +142,33 @@ test('advertised Ctrl+J inserts a newline instead of submitting the draft', asyn
   assert.equal(ui.controller.calls.filter(c => c[0] === 'send').length, 0);
   await ui.key('line two'); await ui.key('\r');
   assert.equal(ui.controller.calls.find(c => c[0] === 'send')?.[1], 'line one\nline two');
+});
+
+test('mouse wheel browses history without corrupting the composer and streaming preserves the view', async t => {
+  const controller=new FakeController();
+  controller.state.entries=Array.from({length:40},(_,i)=>({id:'wheel-'+i,kind:'assistant',text:'message-'+String(i).padStart(2,'0')}));
+  const ui=await setup(t,controller);
+  await ui.key('unsent draft');
+  await ui.key('\u001b[<64;10;10M');
+  assert.match(ui.view.lastFrame(),/newer/);
+  const before=ui.view.lastFrame().split('\n').filter(line=>line.includes('message-'));
+  controller.state.entries.at(-1).text+='\nnew output'.repeat(10);controller.changed();await tick();
+  assert.deepEqual(ui.view.lastFrame().split('\n').filter(line=>line.includes('message-')),before);
+  await ui.key('\r');
+  assert.equal(controller.calls.find(call=>call[0]==='send')?.[1],'unsent draft');
+});
+
+test('drag selection stays frozen during streaming and wheel scrolling still works', async t => {
+  const controller = new FakeController();
+  controller.state.entries = [{ id: 'select', kind: 'assistant', text: 'Original selectable text' }];
+  const ui = await setup(t, controller);
+  await ui.key('\u001b[<0;3;5M');
+  await ui.key('\u001b[<32;10;5M');
+  await ui.key('\u001b[<0;10;5m');
+  controller.state.entries[0].text = 'Changed streaming text'; controller.changed(); await tick();
+  assert.match(ui.view.lastFrame(), /Original selectable text/);
+  await ui.key('\u001b[<65;10;5M');
+  assert.match(ui.view.lastFrame(), /Changed streaming text/);
 });
 
 test('large pending forms keep consent controls visible within the terminal', async t => {

@@ -4,7 +4,7 @@ import { open, lstat, mkdtemp, writeFile, rename, link, unlink, rmdir } from 'no
 import { dirname, extname, join, resolve } from 'node:path';
 import { resolveSettings, HOOK_EVENTS, type Query, type Settings } from '@anthropic-ai/claude-agent-sdk';
 import { safeText } from './editor.js';
-import { assertCompatVersion, compatVersions, invokeCompat, type CompatMethod } from './compat.js';
+import { assertCompatVersion, isCompatVersion, invokeCompat, type CompatMethod } from './compat.js';
 
 export type AdminKind = 'status' | 'config' | 'permissions' | 'mcp' | 'plugins' | 'skills' | 'hooks' | 'memory' | 'doctor' | 'auth' | 'keybindings' | 'sandbox';
 export interface AdminAction { id: string; label: string; description: string; fields?: {key: string; label: string; secret?: boolean; required?: boolean}[]; confirm?: boolean }
@@ -168,7 +168,7 @@ function hookPreview(hook:any):string|undefined {
 }
 async function nativeRead(context:AdminContext,method:CompatMethod):Promise<any|undefined> {
   const initialized=await context.query.initializationResult();
-  if(initialized.claude_code_version!==compatVersions.claude||typeof(context.query as any)[method]!=='function')return undefined;
+  if(!isCompatVersion(initialized.claude_code_version)||typeof(context.query as any)[method]!=='function')return undefined;
   return invokeCompat(context.query,method);
 }
 async function snapshot(kind:AdminKind,context:AdminContext):Promise<unknown> {
@@ -291,7 +291,7 @@ async function action(id:string,input:Record<string,string>,context:AdminContext
     case 'mcp-list':return cli(context,['mcp','list']);
     case 'mcp-login': {
       const initialized=await q.initializationResult();
-      if(initialized.claude_code_version===compatVersions.claude&&typeof(q as any).mcpAuthenticate==='function')return invokeCompat(q,'mcpAuthenticate',{serverName:name(input),confirmed:true});
+      if(isCompatVersion(initialized.claude_code_version)&&typeof(q as any).mcpAuthenticate==='function')return invokeCompat(q,'mcpAuthenticate',{serverName:name(input),confirmed:true});
       return cli(context,['mcp','login',name(input)],180_000);
     }
     case 'mcp-submit-callback':return invokeCompat(q,'mcpSubmitOAuthCallbackUrl',{serverName:name(input),callbackUrl:required(input,'callbackUrl',16384),confirmed:true});
@@ -380,7 +380,7 @@ async function action(id:string,input:Record<string,string>,context:AdminContext
     case 'auth-status':return cli(context,['auth','status','--json']);
     case 'auth-login': {
       const initialized=await q.initializationResult();
-      if(initialized.claude_code_version===compatVersions.claude&&typeof(q as any).claudeAuthenticate==='function')return invokeCompat(q,'claudeAuthenticate',{confirmed:true});
+      if(isCompatVersion(initialized.claude_code_version)&&typeof(q as any).claudeAuthenticate==='function')return invokeCompat(q,'claudeAuthenticate',{confirmed:true});
       return cli(context,['auth','login','--claudeai'],180_000);
     }
     case 'auth-complete':return invokeCompat(q,'claudeOAuthWaitForCompletion',{confirmed:true});

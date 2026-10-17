@@ -5,6 +5,88 @@ Claude Code 2.1.301, Codex CLI 0.163.0. This file separates observed behavior
 from protocol documentation and remaining limitations. No external publication
 or remote CI execution occurred.
 
+## OpenCode UI adoption — 2026-10-17 (in progress)
+
+- Live chat session, Windows Terminal, `bun dist/tui/opencode.js` from a disposable
+  untrusted folder: trust dialog → project trust recorded → prompt → `✓ Read` row →
+  Markdown answer → `Ready`; one Ctrl+C exited and left a normal prompt. A defect found
+  only live: the trust handshake used a `cwd` whose Windows path case differed from the
+  trusted directory, so Claude Code silently recorded nothing and startup failed with
+  "did not acknowledge workspace trust". Reproduced with the SDK directly (differing case
+  → `workspace_trust_recorded=false`, identical → `true`); fixed in `controller.start`
+  and covered by a regression test (fixtures could not catch it).
+- Not exercised: the own tool-approval dialog (a Write was rejected by a GateGuard hook
+  from the user's native configuration before any prompt), resize, wheel, resume and
+  mid-stream interrupt. The assistant text appeared twice once in that rejected turn;
+  unexplained, not yet investigated.
+
+- Upstream pinned at `07bbd0fd…`; see `opencode-provenance.md`. Bun 1.4.3 on
+  Windows runs the OpenTUI 0.6.6 renderer; OpenTUI requires Bun ≥1.3.14 or
+  Node ≥26.4 with experimental FFI, so the TUI uses Bun while native stays on Node 24.
+- Observed: the packed tarball, installed outside the checkout, started the bundle,
+  rendered the ASCII logo and command palette, switched model, sent one short
+  prompt (reply "OK") and returned to Ready. Mouse selection, Ctrl+C copy and
+  paste-back into the composer worked. `npm audit --omit=dev` on that install: 0 findings
+  (Solid is compiled into the UI bundle because npm does not apply package overrides to consumers).
+- Defects found only by this outside-checkout run and fixed: vulnerable Solid
+  resolved in consumer installs; backend module paths relocated by bundling;
+  status row overpainted by a long transcript.
+- Tests: 9 OpenTUI tests (fixture controller) plus 159 existing passing, 5 skipped.
+  Fixture success is not live verification.
+- Not verified: live tool approval/elicitation, resize, wheel, selection during
+  streaming, resume, interruption, upstream message renderer parity, and the final
+  `claudapter tui` entry from the packed install.
+
+## Selection and Claude Code 2.1.302 — 2026-10-17
+
+- Left-drag transcript selection uses SGR button-motion reporting; wheel scrolling
+  remains active. Ctrl+C copies a selection; without one it interrupts as before.
+  Selected visible rows are frozen during streaming. Escape, resize and navigation
+  clear the selection. Selection is limited to the visible transcript, not dialogs.
+- Actual Windows Terminal drag highlight, Ctrl+C and paste-back into the composer
+  succeeded on the startup-error transcript. Connected inference was not needed.
+- Full suite: 159 passed, 0 failed, 5 skipped. Unicode/reverse selection and frozen
+  streaming with subsequent wheel navigation have regression coverage.
+- SDK 0.3.301 now explicitly accepts CLI 2.1.301 and 2.1.302. Unknown versions
+  remain rejected; private method availability and payload validation remain.
+- Real isolated 2.1.302 query initialization and settings/hooks/permissions/memory/
+  skills/status/sandbox/plan/Chrome-status readers succeeded. Browser listing
+  correctly refused a disconnected session. No inference or login was requested.
+- All 16 admin tests passed with native writer testing enabled, using disposable
+  homes. The native writer test uses a fixture query and the actual CLI writer;
+  this is not live OAuth or every native-dialog end-to-end acceptance.
+
+## Branded Ink shell — 2026-10-17
+
+- Typecheck passed; final `npm test`: 157 passed, 0 failed, 5 skipped.
+- Renderer tests cover the large welcome banner, transition to conversation,
+  multiline drafts at 120x40, 100x30, 80x24 and 48x18, and existing approval,
+  masking, cancellation and anchored-scrolling behavior.
+- Actual Windows Terminal launch displayed the new header/composer and a startup
+  error: inherited ANTHROPIC_BASE_URL conflicts with the gateway. Configuration
+  was not changed to suppress this guard. Ctrl+P opened the new framed palette;
+  its rendering and selection highlight were inspected in a desktop screenshot.
+- Connected-session/banner visual acceptance, live resizing, theme screenshots,
+  and an updated packed-artifact installation remain pending. No live inference
+  or release-candidate claim is made for this change.
+
+## TUI presentation follow-up — 2026-10-16
+
+- `npm run check`: passed. `npm test`: 152 passed, 0 failed, 5 skipped.
+- Added regression coverage for quiet successful hooks, independent hook IDs,
+  visible failures, Markdown style spans/Unicode/unfinished fences, anchored
+  streaming, immediate overscroll reversal and mouse-wheel draft protection.
+- Ink tests exercise mouse input and a live-updating transcript with a fake
+  controller. These are not live Windows terminal or subscription evidence.
+- Packed tarball installed outside the checkout at a fresh temporary location;
+  installed CLI `--version` returned `0.2.0-rc.2`. Package inventory includes
+  the new Markdown/viewport modules and excludes test homes/credentials.
+- Pending: real Windows-terminal visual acceptance, mouse-mode cleanup on real
+  terminal shutdown, resize while browsing, and installed TUI session acceptance.
+  No new live inference, OAuth, publishing or global installation was performed.
+- This follow-up is not yet an independently accepted release candidate. Existing
+  release evidence below describes the earlier artifact, not these UI changes.
+
 ## 0.2.0 extension acceptance
 
 The optional TUI, provider ledger and maximum-context integration are implemented.

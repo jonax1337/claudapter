@@ -1,10 +1,16 @@
-import React,{useState,useEffect,useSyncExternalStore} from 'react';
+import React,{useState,useEffect,useSyncExternalStore,useRef} from 'react';
+import { basename } from 'node:path';
 import { Box,Text,render,useInput,useWindowSize,useStdin } from 'ink';
-import { Badge,Spinner } from '@inkjs/ui';
+import { Badge,Spinner,ThemeProvider } from '@inkjs/ui';
+import { themes,PaletteContext,componentThemes } from './theme.js';
+import { shellLayout } from './layout.js';
+import { BrandHeader,Composer,Welcome } from './chrome.js';
 import type { Config } from '../config.js';
 import { VERSION } from '../version.js';
 import { TuiController,type FormField,type PendingDialog } from './controller.js';
-import { TranscriptView,UsagePanel,ContextPanel } from './panels.js';
+import { TranscriptView,UsagePanel,ContextPanel,transcriptLines } from './panels.js';
+import { selectedText,type Selection } from './selection.js';
+import { viewportStart,scrollViewport,type ScrollAnchor } from './viewport.js';
 import { safeText,wrapText,editDraft,type Draft } from './editor.js';
 import { adminActions,adminSnapshot,runAdminAction,type AdminKind } from './admin.js';
 import { defaultPreferences,loadPreferences,savePreferences,keyChord,type Preferences } from './preferences.js';
@@ -12,14 +18,14 @@ import { copyText } from './clipboard.js';
 import { invokeCompat } from './compat.js';
 import { workspaceDiff,addWorkspaceDirectory,outputStyles,setOutputStyle } from './workspace.js';
 
-export const themes={midnight:{accent:'#A78BFA',muted:'#9295AA',border:'#45415C'},ocean:{accent:'#38BDF8',muted:'#8BA7B8',border:'#334C60'},terminal:{accent:'cyan',muted:'gray',border:'gray'},contrast:{accent:'yellow',muted:'white',border:'white'}};
+export { themes } from './theme.js';
 type ThemeName=keyof typeof themes;
 interface MenuItem {label:string;detail?:string;run:()=>void|Promise<void>}
 type Overlay={type:'menu';title:string;items:MenuItem[];filter:string;selected:number}|{type:'view';title:string;text:string;scroll:number}|{type:'confirm';title:string;description:string;selected:number;scroll:number;action:()=>void|Promise<void>}|{type:'form';title:string;description:string;fields:FormField[];values:Record<string,string>;field:number;cursor:number;submit:(values:Record<string,string>)=>void|Promise<void>}|null;
 export const commands=[
   ['/model','Choose a model'],['/usage','All provider usage and quota'],['/context','Effective context and model maximum'],['/agents','Launch or follow up with an agent'],['/tasks','Inspect and stop background tasks'],
   ['/resume','Resume a session'],['/clear','Start a fresh session'],['/compact','Compact this conversation'],['/rewind','Preview and restore file checkpoints'],['/rename','Rename this session'],['/fork','Fork this session'],['/export','Export the transcript'],
-  ['/theme','Choose your accent and palette'],['/thinking','Show or hide reasoning summaries'],['/fallback','Inspect and edit explicit fallback rules'],['/config','Session configuration'],['/permissions','Permission rules and mode'],
+  ['/theme','Choose your accent and palette'],['/details','Expand or collapse tool inputs and output'],['/thinking','Show or hide reasoning summaries'],['/fallback','Inspect and edit explicit fallback rules'],['/config','Session configuration'],['/permissions','Permission rules and mode'],
   ['/mcp','MCP servers and management'],['/plugins','Plugin management'],['/skills','Installed skills and commands'],['/hooks','Hook sources'],['/memory','Native instruction and memory files'],['/status','Session and account status'],['/doctor','Native diagnostics'],['/login','Official authentication'],['/keybindings','Keyboard shortcuts'],
   ['/plan','Inspect plan and planning mode'],['/diff','Review workspace changes'],['/add-dir','Grant access to an additional directory'],['/output-style','Choose response style'],['/sandbox','Native sandbox status'],['/chrome','Browser integration'],['/remote-control','Remote control'],['/history','Recall a previous prompt'],['/effort','Change reasoning effort'],['/attach','Attach an image or text file'],['/attachments','Review and remove queued attachments'],['/copy','Copy the last assistant response'],['/favorite','Toggle a model favorite'],['/help','Command palette'],['/exit','Close this session']
 ];
@@ -31,6 +37,13 @@ export function App({controller,preferences,onClose}:{controller:TuiController;p
   const {stdin}=useStdin();
   const {columns,rows}=useWindowSize();const width=Math.max(1,columns||110),height=Math.max(1,rows||32);
   const [theme,setTheme]=useState<ThemeName>(preferences.theme),[thinking,setThinking]=useState(preferences.thinking);
+  const [anchor,setAnchor]=useState<ScrollAnchor>(null),[showDetails,setShowDetails]=useState(false);
+  const mouseBuffer=useRef('');
+  const [selection,setSelection]=useState<Selection>();
+  useEffect(()=>{setSelection(undefined);},[width,height]);
+  const layout=shellLayout(width,height);
+  const chatRows=layout.transcriptRows;
+  const browse=(delta:number)=>setAnchor(current=>scrollViewport(transcriptLines(state.entries,layout.contentWidth,thinking,showDetails),chatRows,current,delta));
   const [draft,setDraft]=useState<Draft>({text:'',cursor:0}),[scroll,setScroll]=useState(0),[panel,setPanel]=useState<'chat'|'usage'|'context'>('chat');
   const [overlay,setOverlay]=useState<Overlay>(null),[toast,setToast]=useState(''),[exitAt,setExitAt]=useState(0),[attachments,setAttachments]=useState<any[]>([]);
   const [decision,setDecision]=useState({id:'',choice:0,field:-1,values:Object.create(null) as Record<string,string>,cursor:0,scroll:0,option:0});
@@ -48,6 +61,7 @@ export function App({controller,preferences,onClose}:{controller:TuiController;p
     if(!controller.query)throw new Error('Session is still starting.');
     const actions=adminActions[kind];
     menu(kind.toUpperCase(),[
+      ...(kind==='hooks'?[{label:'Recent hook activity',detail:'Routine lifecycle stays out of the conversation; failures remain visible.',run:()=>view('HOOK ACTIVITY',(state.hookActivity??[]).map(hook=>hook.name+' · '+hook.outcome).join('\n')||'No hook events received.')}]:[]),
       {label:'Inspect current '+kind,run:async()=>view(kind.toUpperCase(),await adminSnapshot(kind,adminContext()))},
       ...actions.map(action=>({label:action.label,detail:action.description,run:()=>{
         const execute=async(values:Record<string,string>)=>{const result=await runAdminAction(action.id,values,adminContext());if(action.id==='permission-mode'){state.permissionMode=values.mode;controller.changed();}view(action.label,result);};
@@ -88,6 +102,14 @@ export function App({controller,preferences,onClose}:{controller:TuiController;p
       if(argument){if(!state.models.some(model=>model.id===argument))throw new Error('Choose a configured model.');await toggle(argument);}else menu('MODEL FAVORITES',state.models.map(model=>({label:(preferences.favorites.includes(model.id)?'★ ':'')+model.label,run:()=>toggle(model.id)})));return;
     }
     if(command==='/copy'){const last=[...state.entries].reverse().find(entry=>entry.kind==='assistant'&&!entry.agent);if(!last)throw new Error('No assistant response to copy.');await copyText(last.text);setToast('Assistant response copied.');setOverlay(null);return;}
+    if(command==='/permissions'&&!argument){
+      menu('SESSION PERMISSIONS',[
+        ...['default','plan','acceptEdits'].map(mode=>({label:mode+(state.permissionMode===mode?' · active':''),detail:mode==='default'?'Ask according to native permission rules':mode==='plan'?'Plan without executing changes':'Accept edits; other native rules still apply',run:()=>confirm('Change permission mode?',mode,async()=>{await controller.query!.setPermissionMode(mode as 'default'|'plan'|'acceptEdits');state.permissionMode=mode;controller.changed();setOverlay(null);})})),
+        {label:'Rules and advanced controls',run:()=>administration('permissions')},
+        {label:'About unrestricted modes',run:()=>view('PERMISSION MODES','This TUI preserves explicitly supplied native startup permission options. It never enables bypass implicitly or overrides managed policy. Changing native policy or adding bypass flags is not performed by this dialog.')}
+      ]);return;
+    }
+    if(command==='/details'){setShowDetails(value=>!value);setOverlay(null);return;}
     if(command==='/thinking'){setThinking(!thinking);await persist({thinking:!thinking});setOverlay(null);return;}
     if(command==='/agents'){
       const live=controller.session?[...controller.session.gateway.state.agents].filter(([scope])=>scope.startsWith(state.sessionId+'/')):[];
@@ -149,14 +171,54 @@ export function App({controller,preferences,onClose}:{controller:TuiController;p
     if(Object.hasOwn(adminActions,kind)){await administration(kind as AdminKind);return;}
     if(command==='/exit'){onClose();return;}
     if(command.startsWith('/')&&command!=='/compact'&&!state.commands.some(c=>'/'+c.name===command))throw new Error('Unknown or unavailable command: '+command+'. Open /help; it was not sent to a model.');
-    setOverlay(null);setPanel('chat');setScroll(0);controller.send(text,attachments);setAttachments([]);
+    setOverlay(null);setPanel('chat');setScroll(0);setAnchor(null);controller.send(text,attachments);setAttachments([]);
   }
 
   useEffect(()=>{const resume=()=>run(()=>execute('/resume'));controller.on('resume-picker',resume);return()=>{controller.off('resume-picker',resume);};},[controller]);
   useEffect(()=>{const listener=(data:Buffer|string)=>{if(pending||overlay)return;const chord=keyChord(String(data),{});if(chord&&/^f\d+$/.test(chord)){const command=(preferences.keybindings??defaultPreferences().keybindings)[chord];if(command)run(()=>execute(command));}};stdin.on('data',listener);return()=>{stdin.off('data',listener);};},[stdin,pending,overlay,preferences,controller]);
 
+  useEffect(()=>{
+    const listener=(data:Buffer|string)=>{
+      const chunk=mouseBuffer.current+String(data);
+      const incomplete=/\x1b(?:\[<?[\d;]*)?$/.exec(chunk);
+      mouseBuffer.current=incomplete?.[0]??'';
+      if(mouseBuffer.current.length>64)mouseBuffer.current='';
+      if(!pending&&!overlay&&panel==='chat')for(const match of chunk.matchAll(/\x1b\[<(0|32);(\d+);(\d+)([Mm])/g)){
+        const x=Number(match[2])-3,y=Number(match[3])-4;
+        const point={row:Math.max(0,Math.min(chatRows-1,y)),column:Math.max(0,Math.min(layout.contentWidth-1,x))};
+        if(match[1]==='0'&&match[4]==='M'){
+          if(y<0||y>=chatRows||x<0||x>=layout.contentWidth){setSelection(undefined);continue;}
+          const lines=transcriptLines(state.entries,layout.contentWidth,thinking,showDetails);
+          const start=viewportStart(lines,chatRows,anchor);
+          setSelection({lines:lines.slice(start,start+chatRows),start:point,end:point,dragging:true});
+        }else setSelection(current=>current?.dragging?{...current,end:point,dragging:match[4]!=='m'}:current);
+      }
+      for(const match of chunk.matchAll(/\x1b\[<(64|65);\d+;(\d+)M/g)){
+        setSelection(undefined);
+        const y=Number(match[2]);
+        if(y<3||y>height-7)continue;
+        const delta=match[1]==='64'?-3:3;
+        if(pending)setDecision(current=>({...current,scroll:Math.max(0,current.scroll+delta)}));
+        else if(overlay?.type==='view'||overlay?.type==='confirm')setOverlay({...overlay,scroll:Math.max(0,overlay.scroll+delta)});
+        else if(!overlay){if(panel==='chat')browse(delta);else setScroll(current=>Math.max(0,current+delta));}
+      }
+    };
+    stdin.on('data',listener);return()=>{stdin.off('data',listener);};
+  },[stdin,pending,overlay,panel,height,width,thinking,showDetails,anchor,state.entries,controller.revision]);
+  useEffect(()=>{setSelection(undefined);},[pending,overlay,panel,thinking,showDetails]);
+
   useInput((input,key)=>{
-    if(key.eventType==='release')return;
+    if(key.eventType==='release'||input.includes('\x1b'))return;
+    if(selection&&!pending&&!overlay){
+      if(key.ctrl&&input==='c'){
+        const text=selectedText(selection);
+        if(text)run(async()=>{await copyText(text);setToast('Selection copied');setSelection(undefined);});
+        else setSelection(undefined);
+        return;
+      }
+      setSelection(undefined);
+      if(key.escape)return;
+    }
     if(pending){
       const next={...dialogDecision,values:Object.assign(Object.create(null),dialogDecision.values) as Record<string,string>};
       if(key.escape||(key.ctrl&&input==='c')){controller.cancelDialog(pending.id);if(key.ctrl)run(()=>controller.interrupt());return;}
@@ -214,10 +276,13 @@ export function App({controller,preferences,onClose}:{controller:TuiController;p
     }
     const chord=keyChord(input,key);const shortcut=chord?(preferences.keybindings??defaultPreferences().keybindings)[chord]:undefined;
     if(shortcut){run(()=>execute(shortcut));return;}
-    if(key.escape){setPanel('chat');setScroll(0);return;}
-    if(key.pageUp){setScroll(Math.max(0,scroll+(panel==='chat'?1:-1)*Math.max(5,height-12)));return;}
-    if(key.pageDown){setScroll(Math.max(0,scroll+(panel==='chat'?-1:1)*Math.max(5,height-12)));return;}
-    if(key.end&&!draft.text){setScroll(0);return;}
+    if(key.escape){setPanel('chat');setScroll(0);setAnchor(null);return;}
+    if(key.pageUp||key.pageDown){
+      const delta=(key.pageDown?1:-1)*chatRows;
+      if(panel==='chat')browse(delta);else setScroll(Math.max(0,scroll+delta));return;
+    }
+    if(key.home&&!draft.text&&panel==='chat'){browse(-Infinity);return;}
+    if(key.end&&!draft.text){setScroll(0);setAnchor(null);return;}
     if(key.tab&&draft.text.startsWith('/')){const match=commands.find(([name])=>name.startsWith(draft.text.trim()));if(match)setDraft({text:match[0]+' ',cursor:match[0].length+1});return;}
     if(key.return){if(key.shift)setDraft(editDraft(draft,'\n',{}));else{const text=draft.text;run(async()=>{await execute(text);setDraft(current=>current.text===text?{text:'',cursor:0}:current);});}return;}
     if(key.ctrl&&input==='j'){setDraft(editDraft(draft,'\n',{}));return;}
@@ -225,36 +290,36 @@ export function App({controller,preferences,onClose}:{controller:TuiController;p
   });
 
   if(width<48||height<18)return <Box width={width} height={height} flexDirection="column"><Text wrap="truncate" color={palette.accent}>Claudapter</Text><Text wrap="truncate">Resize to at least 48 × 18.</Text><Text wrap="truncate">Ctrl+C twice exits safely.</Text></Box>;
-  const mainHeight=Math.max(6,height-10);
-  const selection=overlay?.type==='menu'?overlay.items.filter(item=>(item.label+' '+(item.detail??'')).toLowerCase().includes(overlay.filter.toLowerCase())):[];
+  const mainHeight=layout.mainHeight;
+  const menuSelection=overlay?.type==='menu'?overlay.items.filter(item=>(item.label+' '+(item.detail??'')).toLowerCase().includes(overlay.filter.toLowerCase())):[];
   const selectedStart=overlay?.type==='menu'?Math.max(0,overlay.selected-Math.floor((mainHeight-5)/2)):0;
   const autocomplete=draft.text.startsWith('/')&&!draft.text.includes(' ')?commands.filter(([name])=>name.startsWith(draft.text)).slice(0,3).map(([name])=>name).join('   '):'';
   const composerLines=wrapText(draft.text.slice(0,draft.cursor)+'▏'+draft.text.slice(draft.cursor),width-8);
   const caretLine=composerLines.findIndex(line=>line.includes('▏'));const composer=composerLines.slice(Math.max(0,caretLine-2),Math.max(3,caretLine+1)).join('\n');
-  return <Box flexDirection="column" width={width} height={height} paddingX={1}>
-    <Box justifyContent="space-between"><Text bold color={palette.accent}>◈ CLAUDAPTER <Text dimColor>/{VERSION}</Text></Text><Text color={palette.muted}>{state.ready?'CLAUDE CODE ENGINE':'CONNECTING'}</Text></Box>
-    <Box gap={2}><Text color={palette.accent}>{state.model}</Text><Text dimColor>{state.lastRoute?state.lastRoute.provider+' / '+state.lastRoute.actual:'Awaiting first route'}</Text><Text color={palette.muted}>· {state.permissionMode}</Text></Box>
-    <Box borderStyle="single" borderColor={palette.border} flexDirection="column" height={mainHeight} paddingX={1}>
+  return <PaletteContext.Provider value={palette}><ThemeProvider theme={componentThemes[theme]}><Box flexDirection="column" width={width} height={height} paddingX={1}>
+    <BrandHeader project={basename(controller.cwd??process.cwd())} version={VERSION} ready={state.ready} accent={palette.accent} muted={palette.muted}/>
+    <Box><Text color={palette.muted} wrap="truncate-end"><Text color={palette.accent}>{safeText(state.model)}</Text>  · {safeText(state.lastRoute?state.lastRoute.provider+' / '+state.lastRoute.actual:'Awaiting first route')}  · {safeText(state.permissionMode)}</Text></Box>
+    <Box flexDirection="column" height={mainHeight} borderStyle={pending||overlay?'round':undefined} borderColor={pending?palette.warning:palette.border} paddingX={1} paddingY={pending||overlay?0:1} overflow="hidden">
       {pending?<>
-        <Text bold color="yellow">{safeText(pending.title)}</Text>
+        <Text bold color={palette.warning}>{safeText(pending.title)}</Text>
         <Box flexGrow={1} flexShrink={1} overflow="hidden" flexDirection="column"><Text>{wrapText(pending.description,width-8).slice(dialogDecision.scroll,dialogDecision.scroll+Math.max(1,mainHeight-8)).join('\n')}</Text>
         {pending.fields.length>0&&(()=>{const index=Math.max(0,dialogDecision.field),field=pending.fields[index];const value=dialogDecision.values[field.key]??'';return <Box flexDirection="column"><Text color={palette.accent} wrap="truncate">Field {index+1}/{pending.fields.length}: {safeText(field.label)}</Text>{field.options?.length?(mainHeight>15?<Box flexDirection="column">{field.options.slice(Math.max(0,dialogDecision.option-1),Math.max(3,dialogDecision.option+2)).map((option,i)=><Text key={option} color={dialogDecision.field>=0&&i+Math.max(0,dialogDecision.option-1)===dialogDecision.option?palette.accent:palette.muted} wrap="truncate">{value.split(', ').includes(option)?'●':'○'} {safeText(option)}</Text>)}</Box>:<Text dimColor wrap="truncate">{safeText(field.options.join(' / '))}</Text>):null}<Text wrap="truncate">{field.secret?'•'.repeat(value.length):safeText(value.slice(0,dialogDecision.cursor))}{dialogDecision.field>=0?'▏':''}{field.secret?'':safeText(value.slice(dialogDecision.cursor))}</Text></Box>;})()}</Box>
         <Box flexDirection="column" flexShrink={0}>{pending.choices.map((choice,i)=><Text key={i} wrap="truncate" inverse={dialogDecision.field<0&&dialogDecision.choice===i} color={i===0?'yellow':palette.accent}>{dialogDecision.field<0&&dialogDecision.choice===i?'› ':'  '}{safeText(choice.label)}</Text>)}</Box>
         <Box flexShrink={0}><Text dimColor wrap="truncate">Tab: fields · Arrows: choice · Enter: confirm · Esc: decline · PgUp/PgDn: details</Text></Box>
       </>:overlay?.type==='menu'?<>
         <Text bold color={palette.accent}>{safeText(overlay.title)}</Text><Text dimColor>Filter: {overlay.filter||'type to search'}</Text>
-        {selection.slice(selectedStart,selectedStart+Math.max(1,Math.floor((mainHeight-5)/2))).map((item,i)=><Box key={selectedStart+i} flexDirection="column"><Text color={selectedStart+i===overlay.selected?palette.accent:undefined} bold={selectedStart+i===overlay.selected}>{selectedStart+i===overlay.selected?'› ':'  '}{safeText(item.label)}</Text><Text dimColor wrap="truncate">  {safeText(item.detail??'')}</Text></Box>)}
-        {!selection.length&&<Text dimColor>No entries available.</Text>}<Text dimColor>↑↓ Select · Enter Open · Esc Close</Text>
-      </>:overlay?.type==='view'?<><Text bold color={palette.accent}>{safeText(overlay.title)}</Text><Text>{wrapText(overlay.text,width-8).slice(overlay.scroll,overlay.scroll+mainHeight-4).join('\n')}</Text><Text dimColor>↑↓ / PgUp / PgDn Scroll · Esc Close</Text></>:overlay?.type==='confirm'?<><Text bold color="yellow">{safeText(overlay.title)}</Text><Box flexGrow={1} overflow="hidden"><Text>{wrapText(overlay.description,width-8).slice(overlay.scroll,overlay.scroll+mainHeight-5).join('\n')}</Text></Box><Box gap={3} flexShrink={0}><Text inverse={overlay.selected===0}>Cancel</Text><Text inverse={overlay.selected===1} color="yellow">Confirm</Text></Box><Text dimColor>PgUp/PgDn: full preview · Arrows: choice · Enter: confirm</Text></>:overlay?.type==='form'?<>
+        {menuSelection.slice(selectedStart,selectedStart+Math.max(1,Math.floor((mainHeight-5)/2))).map((item,i)=><Box key={selectedStart+i} flexDirection="column"><Text inverse={selectedStart+i===overlay.selected} color={selectedStart+i===overlay.selected?palette.accent:undefined} bold={selectedStart+i===overlay.selected}>{selectedStart+i===overlay.selected?'› ':'  '}{safeText(item.label)}</Text><Text dimColor wrap="truncate">  {safeText(item.detail??'')}</Text></Box>)}
+        {!menuSelection.length&&<Text dimColor>No entries available.</Text>}<Text dimColor>↑↓ Select · Enter Open · Esc Close</Text>
+      </>:overlay?.type==='view'?<><Text bold color={palette.accent}>{safeText(overlay.title)}</Text><Text>{wrapText(overlay.text,width-8).slice(overlay.scroll,overlay.scroll+mainHeight-4).join('\n')}</Text><Text dimColor>↑↓ / PgUp / PgDn Scroll · Esc Close</Text></>:overlay?.type==='confirm'?<><Text bold color={palette.warning}>{safeText(overlay.title)}</Text><Box flexGrow={1} overflow="hidden"><Text>{wrapText(overlay.description,width-8).slice(overlay.scroll,overlay.scroll+mainHeight-5).join('\n')}</Text></Box><Box gap={3} flexShrink={0}><Text inverse={overlay.selected===0}>Cancel</Text><Text inverse={overlay.selected===1} color={palette.warning}>Confirm</Text></Box><Text dimColor>PgUp/PgDn: full preview · Arrows: choice · Enter: confirm</Text></>:overlay?.type==='form'?<>
         <Text bold color={palette.accent}>{safeText(overlay.title)}</Text><Text dimColor>{wrapText(overlay.description,width-8).slice(0,3).join('\n')}</Text>
         {overlay.fields.map((field,i)=><Box key={field.key} flexDirection="column" marginTop={1}><Text color={i===overlay.field?palette.accent:palette.muted}>{field.label}</Text><Text>{wrapText(field.secret?'•'.repeat((overlay.values[field.key]??'').length):(overlay.values[field.key]??'')+(i===overlay.field?'▏':''),width-8).slice(-Math.max(2,Math.floor((mainHeight-7)/overlay.fields.length))).join('\n')}</Text></Box>)}
         <Text dimColor>Tab Next field · Enter Continue / submit · Shift+Enter New line · Esc Cancel</Text>
-      </>:panel==='usage'?<UsagePanel snapshot={state.usage} scroll={scroll} width={width-6} height={mainHeight-2} accent={palette.accent}/>:panel==='context'?<ContextPanel context={state.context} scroll={scroll} model={state.models.find(m=>m.id===state.model)??state.model} width={width-6} height={mainHeight-2} accent={palette.accent}/>:state.entries.length?<TranscriptView entries={state.entries} width={width-6} height={mainHeight-2} scroll={scroll} showThinking={thinking} accent={palette.accent}/>:<Box flexDirection="column" paddingX={2} paddingTop={1}><Text bold color={palette.accent}>Your Claude Code. Your choice of models.</Text><Text> </Text><Text>Start a conversation, or open the command palette.</Text><Text dimColor>/model  /usage  /context  /agents  /theme</Text><Text> </Text><Text dimColor>Tools, policies, skills and plugins come from your existing Claude environment.</Text></Box>}
+      </>:panel==='usage'?<UsagePanel snapshot={state.usage} scroll={scroll} width={layout.contentWidth} height={mainHeight-2} accent={palette.accent}/>:panel==='context'?<ContextPanel context={state.context} scroll={scroll} model={state.models.find(m=>m.id===state.model)??state.model} width={layout.contentWidth} height={mainHeight-2} accent={palette.accent}/>:state.entries.length?<TranscriptView selection={selection} entries={state.entries} width={layout.contentWidth} height={mainHeight-2} anchor={anchor} showThinking={thinking} showDetails={showDetails} accent={palette.accent}/>:<Welcome width={layout.contentWidth} height={mainHeight-2} accent={palette.accent}/>}
     </Box>
-    <Box gap={1}>{state.busy?<Spinner label={state.status}/>:<Text color={state.ready?'green':palette.muted}>● {state.status}</Text>}{attachments.length>0&&<Badge color="cyan">{attachments.length} attached</Badge>}<Text color={toast?'yellow':palette.muted} wrap="truncate">{toast||autocomplete}</Text></Box>
-    <Box borderStyle="round" borderColor={pending||overlay?palette.border:palette.accent} paddingX={1} minHeight={3}><Text color={palette.accent}>› </Text><Text>{composer}</Text></Box>
-    <Text color={palette.muted}>Ctrl+P Commands · /model · /usage · /theme · PgUp History · Ctrl+C Interrupt</Text>
-  </Box>;
+    <Box gap={1}>{state.busy?<Spinner label={state.status}/>:<Text color={state.ready?'green':palette.muted}>● {state.status}</Text>}{!state.ready&&(state.hookActivity??[]).some(hook=>hook.outcome==='running')&&<Text dimColor wrap="truncate-end">Starting hooks…</Text>}{attachments.length>0&&<Badge color="cyan">{attachments.length} attached</Badge>}<Text color={toast?'yellow':palette.muted} wrap="truncate">{toast||autocomplete}</Text></Box>
+    <Composer text={composer} accent={palette.accent} border={palette.border} inactive={Boolean(pending||overlay)}/>
+    <Text color={palette.muted} wrap="truncate-end">Drag Select · Ctrl+C Copy / interrupt · Wheel Scroll · Ctrl+P Commands · Esc Clear selection</Text>
+  </Box></ThemeProvider></PaletteContext.Provider>;
 }
 
 export async function runTui(args:string[],config:Config):Promise<number>{
@@ -263,7 +328,10 @@ export async function runTui(args:string[],config:Config):Promise<number>{
   const controller=new TuiController(args,config);let instance:ReturnType<typeof render>;let closing=false;
   const close=()=>{if(closing)return;closing=true;void controller.close().finally(()=>instance.unmount());};
   instance=render(<App controller={controller} preferences={preferences} onClose={close}/>,{alternateScreen:true,exitOnCtrlC:false,maxFps:25,patchConsole:false});
+  const disableMouse=()=>process.stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1006l');
+  process.stdout.write('\x1b[?1002h\x1b[?1006h');
+  process.once('exit',disableMouse);
   process.once('SIGTERM',close);
   try{void controller.start().catch(error=>{controller.notice((error as Error).message,true);controller.state.status='Startup failed — Ctrl+C twice to exit';controller.changed();});await instance.waitUntilExit();return 0;}
-  finally{process.off('SIGTERM',close);await controller.close();}
+  finally{disableMouse();process.off('exit',disableMouse);process.off('SIGTERM',close);await controller.close();}
 }

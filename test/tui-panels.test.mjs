@@ -4,6 +4,7 @@ import React from 'react';
 import { render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { transcriptLines, TranscriptView, UsagePanel, ContextPanel } from '../dist/tui/panels.js';
+import { viewportStart, scrollViewport } from '../dist/tui/viewport.js';
 
 const size = { width: 72, height: 35, accent: '#9caeff' };
 const snapshot = {
@@ -33,6 +34,15 @@ test('transcript rows preserve fenced code, strip control sequences and fit cell
   assert.doesNotMatch(text, /```/);
 });
 
+test('Markdown has styled inline spans, readable lists, quotes and tables', () => {
+  const entries = [{id:'md',kind:'assistant',text:'Hello **bold** and *italic* with `code`.\n\n- first\n- second\n\n> quoted\n\n| Name | Value |\n| --- | --- |\n| Item | 42 |'}];
+  const lines = transcriptLines(entries,72);
+  const text = lines.map(line=>line.text).join('\n');
+  assert.doesNotMatch(text,/\*\*|\*italic\*|`code`/);
+  assert.match(text,/first/);assert.match(text,/quoted/);assert.match(text,/42/);
+  assert.ok(lines.some(line=>line.spans?.some(span=>span.bold&&span.text==='bold')));
+});
+
 test('thinking is opt-in and scroll is measured from the transcript bottom', async () => {
   const entries = [{ id: 'secret', kind: 'thinking', text: 'hidden reasoning' },
     ...Array.from({ length: 15 }, (_, i) => ({ id: String(i), kind: 'assistant', text: `answer-${String(i).padStart(2, '0')}` }))];
@@ -47,6 +57,31 @@ test('thinking is opt-in and scroll is measured from the transcript bottom', asy
   assert.doesNotMatch(top, /answer-14/);
   assert.match(top, /newer/);
   assert.ok(top.split('\n').length <= 8);
+});
+
+test('scroll anchor holds earlier content as streamed output grows and overscroll reverses immediately', () => {
+  const entries=Array.from({length:20},(_,i)=>({id:'anchor-'+i,kind:'assistant',text:'answer '+i}));
+  const before=transcriptLines(entries,60);
+  const anchor=scrollViewport(before,6,null,-9);
+  const start=viewportStart(before,6,anchor);
+  entries.at(-1).text+='\nstreamed output'.repeat(20);
+  const after=transcriptLines(entries,60);
+  assert.equal(after[viewportStart(after,6,anchor)].entryId,before[start].entryId);
+  const top=scrollViewport(after,6,anchor,-100000);
+  assert.equal(viewportStart(after,6,top),0);
+  assert.equal(viewportStart(after,6,scrollViewport(after,6,top,3)),3);
+  assert.equal(scrollViewport(after,6,top,100000),null);
+});
+
+test('Markdown wraps graphemes safely and preserves unfinished fenced code', () => {
+  const entries=[{id:'unfinished',kind:'assistant',text:'**Bold** and *italic* [site](https://example.com)\n\n```ts\n  界🙂é\n  const x = 1;'}];
+  for(const width of [1,2,8,40]){
+    const lines=transcriptLines(entries,width);
+    assert.ok(lines.every(line=>stringWidth(line.text)<=width));
+    assert.ok(lines.every(line=>!line.spans||line.spans.map(span=>span.text).join('')===line.text));
+  }
+  const text=transcriptLines(entries,60).map(line=>line.text).join('\n');
+  assert.match(text,/│   界🙂é/);assert.match(text,/https:\/\/example.com/);
 });
 
 test('usage shows unknown quotas and billing without fabricated zero percentages or prices', async () => {

@@ -14,8 +14,21 @@ test('native skill refresh replaces command availability and hook events retain 
   c.receive({type:'system',subtype:'commands_changed',commands:[{name:'fixture-skill',description:'Updated'}]});
   c.receive({type:'system',subtype:'hook_response',hook_name:'fixture\u001b[2J',outcome:'success'});
   assert.equal(c.state.commands[0].name,'fixture-skill');
-  assert.match(c.state.entries[0].text,/fixture: success/);
-  assert.doesNotMatch(c.state.entries[0].text,/\u001b/);
+  assert.equal(c.state.entries.length,0);
+  assert.match(c.state.hookActivity[0].name,/fixture/);
+  assert.doesNotMatch(c.state.hookActivity[0].name,/\u001b/);
+});
+
+test('same-label hooks keep their identities and only failures enter chat',()=>{
+  const c=controller();
+  for(const hook_id of ['a','b'])c.receive({type:'system',subtype:'hook_started',hook_id,hook_name:'SessionStart'});
+  c.receive({type:'system',subtype:'hook_response',hook_id:'a',hook_name:'SessionStart',outcome:'success'});
+  assert.equal(c.state.hookActivity.length,2);
+  assert.equal(c.state.entries.length,0);
+  c.receive({type:'system',subtype:'hook_response',hook_id:'b',hook_name:'SessionStart',outcome:'error',stderr:'Fixture failure'});
+  assert.equal(c.state.hookActivity.length,2);
+  assert.equal(c.state.entries[0].kind,'error');
+  assert.match(c.state.entries[0].text,/Fixture failure/);
 });
 
 test('streamed and completed assistant blocks reconcile once with independent agent streams',()=>{
@@ -249,6 +262,15 @@ test('workspace trust probe strips user agent prompts, hooks, permissions and ex
   assert.equal(probe.strictMcpConfig,true);assert.equal(probe.persistSession,false);assert.equal(h.queries[0].closed,true);
   assert.equal(h.queries[1].options.agent,'fixture');
   assert.deepEqual(h.queries[1].options.agents,agents);
+});
+
+test('project trust handshake runs in the exact directory it asks Claude Code to trust',async t=>{
+  const {c,h}=await startupFixture(t,[],{trusted:false});
+  const pending=new Promise(resolve=>c.on('change',()=>{if(c.state.pending.length)resolve();}));
+  const start=c.start();await pending;
+  c.answer(c.state.pending[0].id,true);await start;
+  const handshake=h.queries.find(q=>q.options.workspaceTrust);
+  assert.equal(handshake.options.cwd,handshake.options.workspaceTrust.directory);
 });
 
 test('home consent stays on the actual live query without requiring a persisted trust record',async t=>{

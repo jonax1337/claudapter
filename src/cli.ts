@@ -14,7 +14,7 @@ import { VERSION } from './version.js';
 
 async function main() {
   const args=process.argv.slice(2); const config=await loadConfig();
-  if(args[0]==='tui'){const {runTui}=await import('./tui/app.js');process.exitCode=await runTui(args.slice(1)[0]==='--'?args.slice(2):args.slice(1),config);return;}
+  if(args[0]==='tui'){const {runTui}=await import('./tui/launch.js');process.exitCode=await runTui(args.slice(1)[0]==='--'?args.slice(2):args.slice(1));return;}
   if(args[0]==='usage'){const {readUsage,formatUsage}=await import('./usage-client.js');const usage=await readUsage(config,args.includes('--refresh'));console.log(args.includes('--json')?JSON.stringify(usage,null,2):formatUsage(usage));return;}
   if(args[0]==='--') {process.exitCode=await launch(args.slice(1),config);return;}
   const auth=new CodexAuth();

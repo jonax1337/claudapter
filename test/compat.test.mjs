@@ -6,10 +6,11 @@ const fake = extra => ({ initializationResult: async () => ({ claude_code_versio
 
 test('private compatibility rejects unverified engine versions and unknown methods before dispatch', async () => {
   assert.doesNotThrow(() => assertCompatVersion('2.1.301'));
-  for (const version of ['2.1.300', '2.1.302', undefined]) assert.throws(() => assertCompatVersion(version), /requires/);
+  assert.doesNotThrow(() => assertCompatVersion('2.1.302'));
+  for (const version of ['2.1.300', '2.1.303', undefined]) assert.throws(() => assertCompatVersion(version), /requires/);
   let called = false;
   await assert.rejects(invokeCompat(fake({ request() { called = true; } }), 'request'), /Unsupported/);
-  await assert.rejects(invokeCompat(fake({ initializationResult: async () => ({ claude_code_version: '2.1.302' }), getSettings() { called = true; } }), 'getSettings'), /requires/);
+  await assert.rejects(invokeCompat(fake({ initializationResult: async () => ({ claude_code_version: '2.1.303' }), getSettings() { called = true; } }), 'getSettings'), /requires/);
   assert.equal(called, false);
 });
 

@@ -1,8 +1,12 @@
 import { Box, Text } from 'ink';
 import stringWidth from 'string-width';
+import { usePalette } from './theme.js';
+import { selectionBounds, splitSelectedText, type Selection } from './selection.js';
 import type { Model } from '../models.js';
 import type { UsageSnapshot } from '../usage.js';
 import { safeText, wrapText } from './editor.js';
+import { markdownLines, type Span } from './markdown.js';
+import { viewportStart, type ScrollAnchor } from './viewport.js';
 
 export type TranscriptEntry = {
   id: string;
@@ -15,7 +19,8 @@ export type TranscriptEntry = {
 };
 export type Entry = TranscriptEntry;
 
-export type TranscriptLine = { text: string; tone: 'text' | 'accent' | 'muted' | 'code' | 'error'; bold?: boolean };
+export type TranscriptLine = { text: string; tone: 'text' | 'accent' | 'muted' | 'code' | 'error'; bold?: boolean; spans?: Span[]; entryId?: string; entryLine?: number };
+const entryLayouts = new Map<string, { signature: string; lines: TranscriptLine[] }>();
 type Size = { width: number; height: number; accent: string; scroll?:number };
 const dimension = (n: number) => Number.isFinite(n) ? Math.max(1, Math.trunc(n)) : 1;
 const number = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
@@ -29,65 +34,75 @@ function add(lines: TranscriptLine[], text: string, width: number, tone: Transcr
 }
 
 /** Logical, terminal-safe rows. Fenced code keeps indentation and line breaks. */
-export function transcriptLines(entries: TranscriptEntry[], width: number, showThinking = false): TranscriptLine[] {
+export function transcriptLines(entries: TranscriptEntry[], width: number, showThinking = false, showDetails = true): TranscriptLine[] {
   const columns = dimension(width);
   const lines: TranscriptLine[] = [];
   for (const entry of entries) {
     if (entry.kind === 'thinking' && !showThinking) continue;
+    const signature = JSON.stringify([columns, showDetails, lines.length === 0, entry]);
+    const cached = entryLayouts.get(entry.id);
+    if (cached?.signature === signature) { lines.push(...cached.lines); continue; }
+    const start = lines.length;
     if (lines.length) lines.push({ text: '', tone: 'muted' });
+    const remember = () => {
+      const layout = lines.slice(start).map((line, entryLine) => ({ ...line, entryId: entry.id, entryLine }));
+      lines.splice(start, lines.length - start, ...layout);
+      entryLayouts.set(entry.id, { signature, lines: layout });
+      if (entryLayouts.size > 3000) entryLayouts.delete(entryLayouts.keys().next().value!);
+    };
     const agent = entry.agent ? ` · ${safeText(entry.agent)}` : '';
     if (entry.kind === 'tool') {
       const status = entry.status === 'running' ? 'RUNNING' : entry.status === 'error' ? 'FAILED' : entry.status === 'done' ? 'DONE' : 'TOOL';
-      add(lines, `┌ ${label(entry.toolName, 'Tool')}  ·  ${status}${agent}`, columns, entry.status === 'error' ? 'error' : 'accent', true);
-      add(lines, entry.text, columns, 'muted', false, '│ ');
-      if (entry.details) add(lines, entry.details, columns, 'code', false, '│ ');
-      add(lines, '└', columns, 'muted');
+      add(lines, `${entry.status === 'error' ? '×' : entry.status === 'running' ? '◌' : '✓'} ${label(entry.toolName, 'Tool')}  ·  ${status}${agent}`, columns, entry.status === 'error' ? 'error' : 'muted');
+      if (showDetails || entry.status === 'error') {
+        if (entry.text !== entry.toolName) add(lines, entry.text, columns, 'muted', false, '│ ');
+        if (entry.details) add(lines, entry.details, columns, 'code', false, '│ ');
+      }
+      remember();
       continue;
     }
     const role = { user: 'YOU', assistant: 'CLAUDAPTER', thinking: 'THINKING', notice: 'NOTICE', error: 'ERROR' }[entry.kind];
     const tone = entry.kind === 'error' ? 'error' : entry.kind === 'thinking' || entry.kind === 'notice' ? 'muted' : 'accent';
     add(lines, role + agent, columns, tone, true);
-    let fence: { marker: string; length: number } | undefined;
-    for (const paragraph of safeText(entry.text).split('\n')) {
-      const marker = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(paragraph);
-      if (marker && !fence) {
-        fence = { marker: marker[1][0], length: marker[1].length };
-        add(lines, `┌ ${marker[2].trim() || 'code'}`, columns, 'muted');
-      } else if (marker && fence && marker[1][0] === fence.marker && marker[1].length >= fence.length && !marker[2].trim()) {
-        fence = undefined;
-        add(lines, '└', columns, 'muted');
-      } else if (fence) add(lines, paragraph, columns, 'code', false, '│ ');
-      else {
-        const heading = /^#{1,6}\s+(.+)$/.exec(paragraph);
-        add(lines, heading?.[1] ?? paragraph, columns, entry.kind === 'error' ? 'error' : entry.kind === 'thinking' || entry.kind === 'notice' ? 'muted' : 'text', Boolean(heading), '  ');
-      }
-    }
+    const bodyTone = entry.kind === 'error' ? 'error' : entry.kind === 'thinking' || entry.kind === 'notice' ? 'muted' : 'text';
+    if (entry.kind === 'assistant' || entry.kind === 'thinking') {
+      for (const line of markdownLines(entry.text, columns)) lines.push({ ...line, tone: bodyTone });
+    } else add(lines, entry.text, columns, bodyTone);
+    remember();
   }
   return lines;
 }
 
-function Rows({ lines, width, accent }: { lines: TranscriptLine[]; width: number; accent: string }) {
-  return <Box flexDirection="column" width={width} flexShrink={0}>{lines.map((line, index) => <Text key={index}
-    color={line.tone === 'accent' ? accent : line.tone === 'error' ? '#f08a91' : line.tone === 'code' ? '#b9c9dd' : undefined}
-    dimColor={line.tone === 'muted'} bold={line.bold} wrap="truncate-end">{line.text || ' '}</Text>)}</Box>;
+function SelectedRow({ text, bounds }: { text: string; bounds?: [number, number] }) {
+  const parts = splitSelectedText(text, bounds);
+  return <Text>{parts.before}<Text inverse>{parts.selected}</Text>{parts.after}</Text>;
 }
 
-export function TranscriptView({ entries, width, height, scroll = 0, showThinking = false, accent }: Size & {
-  entries: TranscriptEntry[]; scroll?: number; showThinking?: boolean;
+function Rows({ lines, width, accent, selection }: { lines: TranscriptLine[]; width: number; accent: string; selection?: Selection }) {
+  const palette = usePalette();
+  return <Box flexDirection="column" width={width} flexShrink={0}>{lines.map((line, index) => <Text key={index}
+    color={line.tone === 'accent' ? accent : line.tone === 'error' ? palette.error : line.tone === 'code' ? palette.code : line.tone === 'muted' ? palette.muted : undefined}
+    dimColor={line.tone === 'muted'} bold={line.bold} wrap="truncate-end">{selection ? <SelectedRow text={line.text || ' '} bounds={selectionBounds(selection,index)}/> : line.spans?.length ? line.spans.map((span, i) => <Text key={i} bold={span.bold} italic={span.italic} strikethrough={span.strike} color={span.code ? palette.code : undefined}>{span.text}</Text>) : line.text || ' '}</Text>)}</Box>;
+}
+
+export function TranscriptView({ entries, width, height, scroll = 0, showThinking = false, showDetails = true, anchor, accent, selection }: Size & {
+  entries: TranscriptEntry[]; scroll?: number; showThinking?: boolean; showDetails?: boolean; anchor?: ScrollAnchor; selection?: Selection;
 }) {
   const columns = dimension(width), rows = dimension(height);
-  const all = transcriptLines(entries, columns, showThinking);
+  const all = transcriptLines(entries, columns, showThinking, showDetails);
   if (!all.length) return <Box width={columns} height={rows} flexDirection="column" justifyContent="center">
     <Text color={accent} bold wrap="truncate-end">Your workspace. Your models.</Text>
     {rows > 1 && <Text dimColor wrap="truncate-end">Ask a question, start a task, or type / for commands.</Text>}
   </Box>;
   const viewport = Math.max(1, rows - 1);
   const offset = Math.min(Math.max(0, Number.isFinite(scroll) ? Math.trunc(scroll) : 0), Math.max(0, all.length - viewport));
-  const end = all.length - offset, start = Math.max(0, end - viewport);
+  const start = anchor === undefined ? Math.max(0, all.length - offset - viewport) : viewportStart(all, viewport, anchor);
+  const end = Math.min(all.length, start + viewport);
+  const newer = all.length - end;
   return <Box width={columns} height={rows} flexDirection="column" overflow="hidden">
-    <Rows lines={all.slice(start, end)} width={columns} accent={accent}/>
+    <Rows lines={selection?.lines ?? all.slice(start, end)} width={columns} accent={accent} selection={selection}/>
     {rows > 1 && <Box marginTop={Math.max(0, viewport - (end - start))}><Text dimColor wrap="truncate-end">
-      {offset ? `↑ ${start} earlier · ↓ ${offset} newer · End to follow` : start ? `↑ ${start} earlier · PgUp to browse` : ' '}
+      {newer ? `↑ ${start} earlier · ↓ ${newer} newer · End to follow` : start ? `↑ ${start} earlier · Wheel / PgUp to browse` : ' '}
     </Text></Box>}
   </Box>;
 }
