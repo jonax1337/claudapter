@@ -225,6 +225,16 @@ or remote CI execution occurred.
   `--omit=optional`; `claudapter --version` from that directory returns
   **0.2.0-rc.4**. The interactive `claudapter tui` run itself was left to the
   user, so UI live acceptance remains open.
+- Quiet native routing follow-up (2026-10-17): routine per-request `[Claudapter]`
+  stderr lines are opt-in (`CLAUDAPTER_ROUTE_LOG=1`, subsumed by
+  `CLAUDAPTER_TRACE=1`); fallback/interruption notices still print by default.
+  Covered by a contracts unit test (default silent for `request`, deviation
+  lines intact, opt-in restores routine lines). Repacked from the working tree
+  under the same version 0.2.0-rc.4 (126 files), staged outside the checkout,
+  and reinstalled globally with `--omit=optional`; the installed
+  `dist/launcher.js` contains the `CLAUDAPTER_ROUTE_LOG` gate and
+  `claudapter --version` returns 0.2.0-rc.4. Live silence in a real native
+  session is left for the user to confirm.
 - All 16 admin tests passed with native writer testing enabled, using disposable
   homes. The native writer test uses a fixture query and the actual CLI writer;
   this is not live OAuth or every native-dialog end-to-end acceptance.

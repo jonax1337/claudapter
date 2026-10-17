@@ -57,6 +57,18 @@ export async function prepareSettings(args: string[], registry: Registry, config
 
 export interface SessionDependencies {fetch?: typeof fetch; onEvent?: (event: RouteEvent)=>void; quiet?: boolean}
 
+/** Native stderr routing notices: quiet sessions stay silent, route deviations (fallback,
+ *  interrupted output) always log, routine per-request routing only with CLAUDAPTER_ROUTE_LOG=1
+ *  (or CLAUDAPTER_TRACE=1, which subsumes it for diagnostics). Returns the line, or nothing to log. */
+export function nativeRouteLogger(quiet: boolean): (event: RouteEvent) => string | undefined {
+  if (quiet) return () => undefined;
+  const routine = process.env.CLAUDAPTER_ROUTE_LOG === '1' || process.env.CLAUDAPTER_TRACE === '1';
+  return event => {
+    if (event.event !== 'fallback' && event.event !== 'interrupted' && !(routine && event.event === 'request')) return;
+    return '[Claudapter] '+(event.agent?'agent '+event.agent:'main')+': '+event.requested+' -> '+event.provider+'/'+event.actual+(event.reason?' ('+event.reason+')':'')+'\n';
+  };
+}
+
 export async function prepareSession(args: string[], config: Config, dependencies: SessionDependencies = {}) {
   const version=(await promisify(execFile)('claude',['--version'],{windowsHide:true})).stdout.match(/(\d+)\.(\d+)\.(\d+)/);
   if (!version || Number(version[1])<2 || (Number(version[1])===2 && (Number(version[2])<1 || Number(version[2])===1 && Number(version[3])<301)))
@@ -70,11 +82,13 @@ export async function prepareSession(args: string[], config: Config, dependencie
   const dir=await mkdtemp(join(tmpdir(),'claudapter-'));
   const runtimeId=randomUUID();
   const runtimeFile=join(configHome(),'run',runtimeId+'.json');
+  const routeLog=nativeRouteLogger(dependencies.quiet??false);
+  const trace=!dependencies.quiet&&process.env.CLAUDAPTER_TRACE==='1';
   const gateway=await startGateway({registry,auth,config,fetch:dependencies.fetch,
     onEvent:e=>{
       dependencies.onEvent?.(e);
-      if(!dependencies.quiet&&(e.event==='fallback'||e.event==='interrupted'||e.event==='request')) process.stderr.write('[Claudapter] '+(e.agent?'agent '+e.agent:'main')+': '+e.requested+' -> '+e.provider+'/'+e.actual+(e.reason?' ('+e.reason+')':'')+'\n');
-      if(!dependencies.quiet&&process.env.CLAUDAPTER_TRACE==='1') process.stderr.write('[Claudapter trace] '+JSON.stringify(e)+'\n');
+      const line=routeLog(e);if(line)process.stderr.write(line);
+      if(trace)process.stderr.write('[Claudapter trace] '+JSON.stringify(e)+'\n');
     },
     refresh:async()=>{
       const fresh=await buildRegistry(config,auth);

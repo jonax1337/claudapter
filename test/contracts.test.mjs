@@ -6,7 +6,7 @@ import { CodexAuth } from '../dist/auth.js';
 import { validateConfig,defaults } from '../dist/config.js';
 import { Registry,chatgptModels } from '../dist/models.js';
 import { FallbackState,classify,assertCompatible,retryDelay } from '../dist/fallback.js';
-import { prepareSettings } from '../dist/launcher.js';
+import { prepareSettings,nativeRouteLogger } from '../dist/launcher.js';
 import { toResponsesRequest,TurnTranslator,readServerSentEvents } from '../dist/translate.js';
 const rule={enabled:true,from:'a',targets:['b'],scopes:['main'],errors:['rate_limit'],retries:0,timeoutMs:1000,cooldownMs:1000};
 const jwt=exp=>'header.'+Buffer.from(JSON.stringify({exp})).toString('base64url')+'.fixture';
@@ -70,6 +70,20 @@ test('explicit settings and picker rows survive composition without writing nati
   await assert.rejects(prepareSettings(['--agents','{"claudapter:gpt-reviewer":{}}'],registry,defaults()),/collide/);
   const plugin=join(process.env.CLAUDE_CONFIG_DIR,'plugin');await mkdir(join(plugin,'.claude-plugin'),{recursive:true});await writeFile(join(plugin,'.claude-plugin','plugin.json'),'{"name":"claudapter"}');
   await assert.rejects(prepareSettings(['--plugin-dir',plugin],registry,defaults()),/namespace/);
+});
+test('native route log stays quiet for routine requests and reports deviations',()=>{
+  const request={event:'request',requested:'sonnet',actual:'glm-5.3',provider:'zai'};
+  const fallback={...request,event:'fallback',reason:'rate_limit'};
+  const quiet=nativeRouteLogger(true);assert.equal(quiet(request),undefined);assert.equal(quiet(fallback),undefined);
+  const normal=nativeRouteLogger(false);assert.equal(normal(request),undefined);
+  assert.equal(normal(fallback),'[Claudapter] main: sonnet -> zai/glm-5.3 (rate_limit)\n');
+  assert.equal(normal({...fallback,agent:'agent-1'}),'[Claudapter] agent agent-1: sonnet -> zai/glm-5.3 (rate_limit)\n');
+  assert.equal(normal({...request,event:'interrupted'}),'[Claudapter] main: sonnet -> zai/glm-5.3\n');
+  try {
+    process.env.CLAUDAPTER_ROUTE_LOG='1';assert.equal(nativeRouteLogger(false)(request),'[Claudapter] main: sonnet -> zai/glm-5.3\n');
+    delete process.env.CLAUDAPTER_ROUTE_LOG;process.env.CLAUDAPTER_TRACE='1';
+    assert.equal(nativeRouteLogger(false)(request),'[Claudapter] main: sonnet -> zai/glm-5.3\n');
+  } finally {delete process.env.CLAUDAPTER_ROUTE_LOG;delete process.env.CLAUDAPTER_TRACE;}
 });
 test('tool choice, prior thinking, error tool results and unsupported blocks are explicit',()=>{
   const opts={model:'fixture',sessionId:'fixture'};

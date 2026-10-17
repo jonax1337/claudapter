@@ -267,8 +267,10 @@ Target tools and context capacity are checked conservatively. Text uses UTF-8
 bytes as a safe upper bound plus output/overhead reserve; this may reject requests
 that would actually fit. Unknown capacity, unsupported content and automatic
 multimodal fallback are rejected. Nothing truncates history to make it fit.
-`[Claudapter]` routing notices and discovery report requested versus actual model;
-Claude's picker/status may continue showing the requested model during fallback.
+`[Claudapter]` notices report route deviations (fallback, interrupted output), and discovery
+reports requested versus actual model; routine per-request routing lines are opt-in with
+`CLAUDAPTER_ROUTE_LOG=1`. Claude's picker/status may continue showing the requested model
+during fallback.
 
 ## Other providers and account modes
 
@@ -308,7 +310,8 @@ cross-provider fallback empty.
 - Experimental features and future Claude wire fields can require adapter work.
   Native auto-mode classifiers can still request Claude models, including while
   the main model is GPT. No permission system is disabled to conceal this.
-- Diagnostic traces are opt-in with `CLAUDAPTER_TRACE=1`. They contain model IDs,
+- Diagnostic traces are opt-in with `CLAUDAPTER_TRACE=1`, which also enables the routine
+  routing lines of `CLAUDAPTER_ROUTE_LOG=1`. They contain model IDs,
   scopes, statuses and tool names, never conversation bodies or credentials.
 - Credential snapshots in optional live-test directories must be kept private and
   removed after testing. Standard `npm test` uses fake credentials and isolated homes.
