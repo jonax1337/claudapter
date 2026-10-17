@@ -165,16 +165,28 @@ is documented in **[docs/configuration.md](docs/configuration.md)**.
 
 ## How it works
 
-```
-claudapter ──launches──▶ claude (your install, your settings)
-                              │  ANTHROPIC_BASE_URL=http://127.0.0.1:<random port>
-                              ▼
-                     Claudapter gateway (loopback, per-launch token)
-                ┌─────────────┼──────────────┬──────────────┐
-                ▼             ▼              ▼              ▼
-         Anthropic API   ChatGPT/Codex   Z.ai & other   local Ollama
-        (your Claude     (Responses API  Anthropic-     (Anthropic-
-         login)           translation)   compatible)    compatible)
+```mermaid
+flowchart LR
+  cli(["claudapter<br/>claudapter tui"]) -- launches --> cc["<b>Claude Code</b><br/>your install, settings,<br/>permissions and sessions"]
+  cc -- "Messages API" --> gw
+
+  subgraph gw ["Claudapter gateway"]
+    direction TB
+    router["<b>route by model ID</b><br/>127.0.0.1 · per-launch token"]
+    fb["<b>explicit fallback</b><br/>opt-in · before any output"]
+    router -. "429 / 5xx" .-> fb
+  end
+
+  gw --> accounts
+
+  subgraph accounts ["your accounts"]
+    direction TB
+    anthropic["<b>Claude</b><br/>claude-* · sonnet@profile"]
+    chatgpt["<b>ChatGPT</b><br/>gpt-* via Responses"]
+    zai["<b>Z.ai & co.</b><br/>glm-* · Anthropic API"]
+    ollama["<b>Ollama</b><br/>local models"]
+    anthropic ~~~ chatgpt ~~~ zai ~~~ ollama
+  end
 ```
 
 Every launch starts one gateway bound to `127.0.0.1` on a random port, protected
