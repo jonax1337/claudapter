@@ -1,10 +1,18 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { parseOllamaUrl } from './ollama.js';
 
 export interface CompatibleProvider {
   id: string; baseUrl: string; keyEnv: string;
   models: { id: string; upstream?: string; context: number; tools: boolean; vision: boolean }[];
+}
+/** Ollama local models are auto-detected at launch; absence keeps the default loopback probe. */
+export interface OllamaSettings {
+  /** false disables auto-detection and Ollama routing entirely. */
+  enabled?: boolean;
+  /** Absolute Ollama server address; defaults to OLLAMA_HOST or http://127.0.0.1:11434. */
+  baseUrl?: string;
 }
 export interface FallbackRule {
   enabled: boolean; from: string; targets: string[]; scopes: string[];
@@ -21,6 +29,7 @@ export interface Config {
   model?: string;
   /** Per-model default reasoning effort applied at session start and model switch. */
   modelEffort?: Record<string, string>;
+  ollama?: OllamaSettings;
   providers: CompatibleProvider[]; agents: Record<string, string>; fallback: FallbackRule[];
 }
 export const defaults = (): Config => ({ version:1, chatgpt:true, claude:true, providers:[], agents:{}, fallback:[] });
@@ -42,7 +51,7 @@ function keys(value: any, allowed: string[]) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k=>!allowed.includes(k))) throw new Error('Invalid or unknown configuration field.');
 }
 export function validateConfig(value: any): Config {
-  keys(value,['version','chatgpt','claude','profile','model','modelEffort','providers','agents','fallback']);
+  keys(value,['version','chatgpt','claude','profile','model','modelEffort','ollama','providers','agents','fallback']);
   const c = {...defaults(),...value};
   if (c.version!==1 || typeof c.chatgpt!=='boolean' || typeof c.claude!=='boolean' || !Array.isArray(c.providers) || !Array.isArray(c.fallback)) throw new Error('Invalid Claudapter configuration.');
   if (c.profile!==undefined && !PROFILE_NAME.test(c.profile)) throw new Error('Default profile must be a lowercase slug profile name.');
@@ -54,7 +63,13 @@ export function validateConfig(value: any): Config {
       if (!id(model) || !(EFFORT_LEVELS as readonly string[]).includes(effort)) throw new Error('Per-model effort must be a model id and one of: '+EFFORT_LEVELS.join(', ')+'.');
   }
   keys(c.agents,Object.keys(c.agents ?? {}));
-  const seen = new Set<string>(['anthropic','chatgpt']);
+  if (c.ollama !== undefined) {
+    keys(c.ollama,['enabled','baseUrl']);
+    if (c.ollama.enabled !== undefined && typeof c.ollama.enabled !== 'boolean') throw new Error('Ollama enabled must be a boolean.');
+    if (c.ollama.baseUrl !== undefined && typeof c.ollama.baseUrl !== 'string') throw new Error('Ollama baseUrl must be a server address.');
+    if (c.ollama.baseUrl) parseOllamaUrl(c.ollama.baseUrl,'Ollama baseUrl');
+  }
+  const seen = new Set<string>(['anthropic','chatgpt','ollama']);
   for (const p of c.providers) {
     keys(p,['id','baseUrl','keyEnv','models']);
     if (!id(p.id) || seen.has(p.id) || !/^[A-Z][A-Z0-9_]+$/.test(p.keyEnv) || /^(ANTHROPIC|CLAUDE|CODEX|CLAUDAPTER|OPENAI)_/.test(p.keyEnv)) throw new Error('Provider ID/keyEnv must be unique and separate from built-in account credentials.');

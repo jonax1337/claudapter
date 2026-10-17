@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const home = mkdtempSync(join(tmpdir(), 'claudapter-test-'));
 const nativeTest = process.env.CLAUDAPTER_NATIVE_TEST;
-for (const key of Object.keys(process.env)) if (/^(ANTHROPIC_|CLAUDE_|CODEX_|CLAUDAPTER_)/.test(key)) delete process.env[key];
+for (const key of Object.keys(process.env)) if (/^(ANTHROPIC_|CLAUDE_|CODEX_|CLAUDAPTER_|OLLAMA_)/.test(key)) delete process.env[key];
 process.env.CLAUDE_CONFIG_DIR = join(home,'claude');
 process.env.CODEX_HOME = join(home,'codex');
 process.env.CLAUDAPTER_HOME = join(home,'claudapter');

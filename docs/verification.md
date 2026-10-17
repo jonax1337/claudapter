@@ -5,6 +5,46 @@ Claude Code 2.1.301, Codex CLI 0.163.0. This file separates observed behavior
 from protocol documentation and remaining limitations. No external publication
 or remote CI execution occurred.
 
+## Ollama auto-detection and Anthropic passthrough — 2026-10-17
+
+- Live discovery (local Ollama at 127.0.0.1:11434, no config entry):
+  `claudapter models` listed the installed models with live capabilities
+  (`huihui_ai/Qwen3.8-abliterated:27b-q4_K_M` and `qwen3.8-bigctx:latest`,
+  ctx 262144, tools+vision, honest labels with size/quant). After
+  `POST /api/pull` of `qwen3:0.6b`, the next registry build listed it
+  automatically (ctx 40960) together with the sub-100k launch notice.
+- Live transport: a streamed `/v1/messages` request through a real Claudapter
+  gateway to `qwen3:0.6b` (`thinking: {type:"disabled"}`, max_tokens 256)
+  returned HTTP 200 `text/event-stream` with the complete Anthropic event
+  sequence (`message_start` → `content_block_delta` → `content_block_stop` →
+  `message_delta` → `message_stop`) and the exact requested marker
+  "LOCAL BRIDGE OK"; the model's registry state moved to `verified`. A prior
+  attempt with max_tokens 64 streamed only reasoning deltas — passthrough of
+  the `thinking` parameter behaves correctly in both directions.
+- Failure path live: both installed 27B models currently fail to load on this
+  machine ("llama-server process has terminated: exit status 1"). The identical
+  error reproduces with curl directly against Ollama, so it is an Ollama-side
+  runner problem, not a Claudapter defect. Claudapter classified the 500 as
+  unavailable, marked the model `temporarily_unavailable`, and returned the
+  Anthropic error envelope instead of breaking the session.
+- Fixtures: 10 new node tests in `test/ollama.test.mjs` (endpoint resolution
+  and plaintext host policy, catalog listing/skips/unreachable, config
+  validation incl. reserved provider id, registry notices, sub-100k window
+  exemption vs. the configured-provider throw, credential-free transport,
+  gateway 501 for count_tokens, SSE passthrough, `/model` description, refresh
+  merge). Suite: 280 tests, 275 passed, 0 failed, 5 skipped; `npm run check`
+  clean. Test isolation now strips `OLLAMA_*` env and the profiles registry
+  tests use an injected offline fetch — the suite performs no live calls.
+- Packaging: 0.2.0-rc.6 packed from the checkout (130 files, prepack build)
+  and installed globally from a temp directory with `--omit=optional`;
+  installed `claudapter --version` → 0.2.0-rc.6, and `claudapter providers`
+  reports `ollama: enabled, http://127.0.0.1:11434, models: 3` against the
+  running local server. Local test install for Jonas; release-candidate
+  status still requires his review.
+- Not verified live yet: model selection inside an interactive `/model`
+  session, a tool-calling turn on a tools-capable local model, TUI surfaces;
+  the 27B load failure on this machine remains an environment issue.
+
 ## rc.4 interactive run and multi-account profiles — 2026-10-17
 
 - Interactive run of the globally installed 0.2.0-rc.4 artifact, driven through

@@ -84,19 +84,20 @@ test('model@profile ids split, resolve and stay reserved to Claude bases',async 
 test('buildRegistry registers account aliases with their login status',async t=>{
   await isolatedHome(t);
   await addProfile('work',false);
-  const offline=await buildRegistry({...defaults(),chatgpt:false,claude:true},{status:async()=>'missing',home:'/nonexistent'});
+  const noNetwork=async()=>{throw new Error('offline fixture');};
+  const offline=await buildRegistry({...defaults(),chatgpt:false,claude:true},{status:async()=>'missing',home:'/nonexistent'},noNetwork);
   assert.equal(offline.resolve('sonnet@work').auth,'missing');
   await loginFixture('work');
-  const online=await buildRegistry({...defaults(),chatgpt:false,claude:true},{status:async()=>'missing',home:'/nonexistent'});
+  const online=await buildRegistry({...defaults(),chatgpt:false,claude:true},{status:async()=>'missing',home:'/nonexistent'},noNetwork);
   assert.equal(online.resolve('sonnet@work').auth,'authenticated');
-  const claudeOff=await buildRegistry({...defaults(),chatgpt:false,claude:false},{status:async()=>'missing',home:'/nonexistent'});
+  const claudeOff=await buildRegistry({...defaults(),chatgpt:false,claude:false},{status:async()=>'missing',home:'/nonexistent'},noNetwork);
   assert.throws(()=>claudeOff.resolve('sonnet'),/Unknown model/);
 });
 
 test('account models keep native context handling and pass the config validation',async t=>{
   await isolatedHome(t);
   await addProfile('work',false);
-  const registry=await buildRegistry({...defaults(),chatgpt:false,claude:true},{status:async()=>'missing',home:'/nonexistent'});
+  const registry=await buildRegistry({...defaults(),chatgpt:false,claude:true},{status:async()=>'missing',home:'/nonexistent'},async()=>{throw new Error('offline fixture');});
   const external=nativeContextSettings(registry);
   assert.equal(external.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS,undefined,'account models must not fake an external ceiling');
   assert.ok(validateConfig({...defaults(),profile:'work'}));

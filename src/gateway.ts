@@ -109,6 +109,7 @@ export async function startGateway(options: GatewayOptions) {
       fingerprint = createHash('sha256').update((session ?? '') + (agent ?? '') + raw).digest('hex');
       if (interrupted.has(fingerprint)) return error(res, 409, 'Interrupted turn cannot be replayed automatically. Inspect tool results and issue an explicit new instruction.');
       if (model.provider === 'chatgpt' && path.endsWith('count_tokens')) return error(res, 501, 'Exact ChatGPT token counting is unavailable.');
+      if (model.provider === 'ollama' && path.endsWith('count_tokens')) return error(res, 501, 'Exact Ollama token counting is unavailable.');
       emit(event);
       let upstream!: Response;
       const targets=policy?[model.id,...policy.targets.filter(id=>id!==model.id)]:[model.id];
@@ -306,7 +307,8 @@ function failureResponse(res: ServerResponse, upstream: Response, failure: any, 
   const headers: Record<string,string>={'content-type':'application/json','x-should-retry':'false'};
   upstream.headers.forEach((value,key)=>{if (key.startsWith('anthropic-ratelimit-') || key==='retry-after') headers[key]=value;});
   res.writeHead(upstream.status,headers);
-  const claudeTransport=provider==='anthropic'||provider.startsWith('anthropic@');
+  // Native Claude and the keyless local Ollama server report actionable upstream text; other providers stay masked.
+  const messagePassthrough=provider==='anthropic'||provider.startsWith('anthropic@')||provider==='ollama';
   res.end(JSON.stringify({type:'error',error:{type: typeof failure.error?.type==='string'?failure.error.type:'invalid_request_error',
-    message:claudeTransport?safeMessage(String(failure.error?.message ?? 'Anthropic request failed.')):'Upstream '+provider+' rejected the request (HTTP '+upstream.status+').'}}));
+    message:messagePassthrough?safeMessage(String(failure.error?.message ?? 'Upstream '+provider+' request failed.')):'Upstream '+provider+' rejected the request (HTTP '+upstream.status+').'}}));
 }

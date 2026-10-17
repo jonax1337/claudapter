@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Config } from './config.js';
 import { CodexAuth } from './auth.js';
 import type { Model } from './models.js';
+import { ollamaEndpoint } from './ollama.js';
 import { ClaudeAccountAuth, profileClaudeHome } from './profiles.js';
 import { toResponsesRequest } from './translate.js';
 
@@ -40,6 +41,11 @@ export class Providers {
         headers.set('authorization','Bearer '+await account.accessToken());
       }
       if (headers.get('authorization')==='Bearer claudapter-local-only') throw new Error('No Claude credential is configured.');
+    } else if (model.provider === 'ollama') {
+      // Ollama speaks the Anthropic Messages protocol natively and needs no credential; keys are ignored there.
+      if (this.config.ollama?.enabled === false) throw new Error('Ollama provider is disabled.');
+      url = ollamaEndpoint(this.config).baseUrl;
+      headers.set('anthropic-version', String(request.headers['anthropic-version'] ?? '2023-06-01'));
     } else {
       const provider = this.config.providers.find(p=>p.id===model.provider);
       if (!provider) throw new Error('Provider not configured.');

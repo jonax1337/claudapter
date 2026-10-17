@@ -3,7 +3,14 @@ import { join } from 'node:path';
 import { codexHome, type AuthState } from './auth.js';
 import { CodexAuth } from './auth.js';
 import type { Config } from './config.js';
+import { ollamaCatalog, ollamaEndpoint } from './ollama.js';
 import { accountProvider, ClaudeAccountAuth, listProfiles, profileClaudeHome, splitAccountModel } from './profiles.js';
+
+/** Native per-model context windows exist only inside this verified Claude Code range. */
+export const NATIVE_WINDOW_FLOOR = 100000;
+export const NATIVE_WINDOW_CEILING = 1000000;
+/** External models are non-native transports whose catalog capacity must be represented to Claude Code. */
+const isExternal = (model: Model): boolean => model.provider !== 'anthropic' && !model.provider.startsWith('anthropic@');
 
 export interface Model {
   id: string; provider: string; upstream: string; label: string;
@@ -38,6 +45,8 @@ function catalogContext(model: {context_window?: unknown; max_context_window?: u
 
 export class Registry {
   readonly entries = new Map<string, Model>();
+  /** Launch-time findings (unreachable explicit servers, skipped models) shown once per session. */
+  readonly notices: string[] = [];
   constructor(models: Model[] = []) { for (const m of models) this.add(m); }
   add(model: Model): void {
     if (model.provider!=='anthropic' && !model.provider.startsWith('anthropic@') && /^(?:claude-|sonnet$|opus$|haiku$|fable$|default$|opusplan$)/i.test(model.id))
@@ -71,7 +80,7 @@ export function nativeContextSettings(registry: Registry): {
   env: Record<string, string>; modelSettings: Record<string, {autoCompactWindow: number}>;
 } {
   // Profile-account models are native Claude transports; the native engine keeps owning their window.
-  const external = registry.list().filter(model => model.provider !== 'anthropic' && !model.provider.startsWith('anthropic@'));
+  const external = registry.list().filter(isExternal);
   if (!external.length) return {env:{}, modelSettings:{}};
   for (const model of external) if (!Number.isSafeInteger(model.context) || model.context! < 1024)
     throw new Error('Cannot configure the native context window for '+model.id+': catalog capacity is unknown or invalid. Refresh the catalog or configure its capacity.');
@@ -79,19 +88,22 @@ export function nativeContextSettings(registry: Registry): {
   const windows: [string, {autoCompactWindow:number}][] = [];
   for (const model of external) {
     const context = model.context!;
-    if (context >= 100000 && context <= 1000000) windows.push([model.id,{autoCompactWindow:context}]);
-    else if (context !== ceiling)
+    if (context >= NATIVE_WINDOW_FLOOR && context <= NATIVE_WINDOW_CEILING) windows.push([model.id,{autoCompactWindow:context}]);
+    // Auto-discovered Ollama models below the native window floor inherit the process ceiling instead of
+    // failing the launch; the registry notice and the /model description disclose the smaller real capacity.
+    else if (context !== ceiling && model.provider !== 'ollama')
       throw new Error('Claude Code cannot configure a distinct context window of '+context+' for '+model.id+' alongside larger models (per-model windows support 100000 to 1000000 tokens).');
   }
   return {env:{CLAUDE_CODE_MAX_CONTEXT_TOKENS:String(ceiling)}, modelSettings:Object.fromEntries(windows)};
 }
 
-export async function buildRegistry(config: Config, auth: CodexAuth): Promise<Registry> {
+export async function buildRegistry(config: Config, auth: CodexAuth, send: typeof fetch = fetch): Promise<Registry> {
   const registry = new Registry(config.chatgpt ? await chatgptModels(await auth.status(),auth.home) : []);
   if (config.claude) for (const id of ['sonnet','opus','haiku']) registry.add({id,upstream:id,provider:'anthropic',label:'Claude '+id,
     tools:true,vision:true,efforts:[],source:'Native Claude Code alias; resolved by the installed client',auth:'unknown'});
   for (const p of config.providers) for (const m of p.models) registry.add({...m,upstream:m.upstream??m.id,provider:p.id,label:m.id,
     contextSource:'provider configuration',efforts:[],source:'Explicit user provider configuration',auth:process.env[p.keyEnv]?'authenticated':'missing'});
+  if (config.ollama?.enabled !== false) await discoverOllama(registry, config, send);
   if (config.claude) for (const profile of await listProfiles().catch(() => [])) {
     const account = await new ClaudeAccountAuth(profileClaudeHome(profile.name)).status();
     for (const id of ['sonnet','opus','haiku']) registry.resolve(id+'@'+profile.name).auth = account;
@@ -102,4 +114,27 @@ export async function buildRegistry(config: Config, auth: CodexAuth): Promise<Re
     for (const id of rule.targets) registry.resolve(id);
   }
   return registry;
+}
+
+/** Auto-detected local models; an unreachable server stays an empty catalog and never fails a launch. */
+async function discoverOllama(registry: Registry, config: Config, send: typeof fetch): Promise<void> {
+  const endpoint = ollamaEndpoint(config);
+  const catalog = await ollamaCatalog(endpoint.baseUrl, send);
+  if (!catalog.reachable && endpoint.explicit)
+    registry.notices.push('Ollama at '+endpoint.baseUrl+' is unreachable; no local models were added.');
+  registry.notices.push(...catalog.notes);
+  for (const model of catalog.models) {
+    try { registry.add(model); } catch (error: any) { registry.notices.push('Ollama model "'+model.id+'" skipped: '+error.message); }
+  }
+  const ceiling = Math.max(0, ...registry.list().filter(isExternal).map(model => model.context ?? 0));
+  const belowFloor = registry.list().filter(model => model.provider === 'ollama' && model.context! < NATIVE_WINDOW_FLOOR && model.context! < ceiling);
+  if (belowFloor.length) registry.notices.push('Ollama models below the native per-model window floor run under the '+ceiling+'-token session ceiling, so Claude Code may send more context than they hold: '+belowFloor.map(model => model.id+' ('+model.context+' tokens)').join(', ')+'.');
+}
+
+/** Refreshes catalog entries in place: live-listed sources (ChatGPT cache, Ollama) replace stale ids and keep runtime findings. */
+export function mergeRegistryRefresh(registry: Registry, fresh: Registry): void {
+  const liveListed = (model: Model) => model.provider === 'chatgpt' || model.provider === 'ollama';
+  for (const old of registry.list()) if (liveListed(old) && !fresh.entries.has(old.id)) registry.entries.delete(old.id);
+  for (const model of fresh.list()) {const old=registry.entries.get(model.id);registry.entries.set(model.id,{...model,verifiedAt:old?.verifiedAt,availability:old?.availability,unavailableUntil:old?.unavailableUntil,
+    ...(old?.availability==='auth_failed'?{auth:old.auth}:{}),...(model.auth!=='authenticated'&&model.provider==='chatgpt'?{availability:'auth_failed',verifiedAt:undefined}:{})});}
 }

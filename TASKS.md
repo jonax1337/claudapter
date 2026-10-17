@@ -2,6 +2,16 @@
 
 Evidence: `docs/verification.md`. Check items only after verification; record blocked and untested cases explicitly. M1–M5 below preserve the original 0.1.0-rc.1 evidence; they do not imply that every flow has been rerun for the 0.2.0 extension.
 
+## Ollama auto-detection (in progress)
+- [x] Auto-discovery at every registry build: `GET /api/tags` + `POST /api/show` per model (capabilities, `<arch>.context_length`), 1.5 s timeout; an unreachable server stays an empty catalog, per-model failures and reserved-ID collisions become launch notices instead of launch failures (`src/ollama.ts`, `buildRegistry`).
+- [x] Transport: Ollama's Anthropic-compatible `/v1/messages` through the existing passthrough branch — no new protocol translation (the Codex/Responses bridge does not fit Chat-Completions-only Ollama), no credential sent; `count_tokens` refused with 501; endpoint resolution config → `OLLAMA_HOST` → `http://127.0.0.1:11434`, plaintext restricted to loopback/private addresses.
+- [x] Context honesty (decided with Jonas: auto-detect without opt-in, show all models): sub-100k Ollama models are listed and selectable, inherit the session ceiling, and are named in a launch notice plus the `/model` description; hand-configured providers keep the loud throw; `OLLAMA_CONTEXT_LENGTH` (default 4096) caveat in README and `doctor`.
+- [x] Refresh: mid-session `/refresh` adopts newly pulled and drops removed Ollama models (`mergeRegistryRefresh`, extracted from the launcher closure).
+- [x] Tests: 10 new Ollama tests (endpoint/host policy, catalog happy/skip/unreachable, config validation + reserved provider id, registry notices, sub-100k exemption vs. configured-provider throw, credential-free transport, gateway count_tokens 501 + SSE passthrough, picker description, refresh merge); node suite 280 tests / 275 passed / 0 failed / 5 skipped; `npm run check` clean; suite isolation extended to `OLLAMA_*` env, profiles registry tests on injected offline fetch.
+- [x] Live: discovery against the running local server (two installed models with live capabilities; a freshly pulled `qwen3:0.6b` appeared automatically with the honest sub-100k notice); one streamed gateway turn on `qwen3:0.6b` returned the exact requested marker with the full Anthropic SSE sequence; an unloadable 27B model's 500 was classified `temporarily_unavailable` and reproduced identically against Ollama directly.
+- [ ] Live acceptance in an interactive session: `/model` picker with local models, one tool-calling turn on a tools-capable local model, usage accounting, TUI surfaces.
+- [ ] Packed artifact rebuild for the next release candidate.
+
 ## Multi-account profiles and account rotation (0.2.0-rc.5)
 - [x] Profile slot lifecycle: `claudapter profile add|login|list|remove|default` wizard with official `claude auth login`/`codex login` flows, separate Claude/Codex homes under `~/.claudapter/profiles`, reserved/invalid names rejected, interactive confirmation before destructive removal.
 - [x] Launch selection: `--profile <name>|none` (CLI and TUI) and optional default profile; activation fails loudly on conflicting `CLAUDE_CONFIG_DIR`/`CODEX_HOME` instead of switching accounts silently; `profile` subcommands stay usable with a broken default.

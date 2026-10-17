@@ -336,6 +336,34 @@ login and is never sent to Anthropic. Native Claude-only auxiliary features may
 be unavailable. For Claude-only mode set `"chatgpt": false` and leave agents and
 cross-provider fallback empty.
 
+## Ollama local models
+
+Every launch auto-detects a local [Ollama](https://ollama.com) server: `GET
+/api/tags` names the installed models and `POST /api/show` supplies each
+model's capabilities and trained context, so every installed model — including
+newly pulled ones — appears in `/model` without any configuration. Discovery
+re-runs on `/refresh`, and the registry drops models you remove. Requests use
+Ollama's Anthropic-compatible `/v1/messages` endpoint directly (the same
+passthrough transport as Z.ai); no credential is sent, and exact token counting
+is refused with 501 because Ollama has no count_tokens endpoint.
+
+The server address resolves from the optional `ollama` config section, then
+`OLLAMA_HOST`, then `http://127.0.0.1:11434`. Plaintext `http` is only accepted
+for loopback and private-network addresses; public servers need `https`.
+
+```json
+"ollama": { "baseUrl": "http://127.0.0.1:11434" }
+```
+
+Set `"ollama": { "enabled": false }` to switch auto-detection off. Two honesty
+rules apply. First, the catalog reports each model's *trained* context
+(`<arch>.context_length`); the window the Ollama server actually loads can be
+smaller (`OLLAMA_CONTEXT_LENGTH`, default 4096) and truncates input silently —
+raise the server window to match the models you use. Second, Claude Code only
+accepts per-model windows between 100k and 1M tokens: models below that floor
+are still listed and selectable, run under the session ceiling, and are named
+in a launch notice; `/model` marks them accordingly.
+
 ## Limits and troubleshooting
 
 - Native `/usage` and cost estimates are not replaced by Claudapter's ledger.

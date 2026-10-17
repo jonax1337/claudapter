@@ -6,7 +6,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { CodexAuth } from './auth.js';
-import { buildRegistry, nativeContextSettings, type Registry } from './models.js';
+import { buildRegistry, mergeRegistryRefresh, nativeContextSettings, NATIVE_WINDOW_FLOOR, type Registry } from './models.js';
 import { startGateway, TOKEN_HEADER, type RouteEvent } from './gateway.js';
 import { configHome, type Config } from './config.js';
 import { VERSION } from './version.js';
@@ -51,6 +51,8 @@ export async function prepareSettings(args: string[], registry: Registry, config
   for(const m of registry.list().filter(m=>m.provider!=='anthropic')) if(!options.some(o=>o.model===m.id))
     options.push({model:m.id,label:m.label,description:m.provider.startsWith('anthropic@')
       ?'Claude through profile '+m.provider.slice('anthropic@'.length)
+      :m.provider==='ollama'
+      ?'ollama local · '+m.context+'-token context'+((m.context??0)<NATIVE_WINDOW_FLOOR?' · below the native per-model window floor':'')
       :m.provider+'; catalog entry, not guaranteed availability'});
   const context=nativeContextSettings(registry);
   const modelSettings={...explicit.modelSettings};
@@ -80,7 +82,7 @@ export async function prepareSession(args: string[], config: Config, dependencie
     if(process.env[key]) throw new Error(key+' conflicts with the Claudapter gateway.');
   if(process.env.CLAUDE_CODE_SUBAGENT_MODEL && Object.keys(config.agents).length) throw new Error('CLAUDE_CODE_SUBAGENT_MODEL would override configured agents; unset it explicitly.');
   if(process.env.ANTHROPIC_CUSTOM_HEADERS?.toLowerCase().includes(TOKEN_HEADER)) throw new Error('Reserved Claudapter authentication header already exists.');
-  const auth=new CodexAuth(); const registry=await buildRegistry(config,auth);
+  const auth=new CodexAuth(); const send=dependencies.fetch??fetch; const registry=await buildRegistry(config,auth,send);
   const prepared=await prepareSettings(args,registry,config);
   const dir=await mkdtemp(join(tmpdir(),'claudapter-'));
   const runtimeId=randomUUID();
@@ -93,12 +95,7 @@ export async function prepareSession(args: string[], config: Config, dependencie
       const line=routeLog(e);if(line)process.stderr.write(line);
       if(trace)process.stderr.write('[Claudapter trace] '+JSON.stringify(e)+'\n');
     },
-    refresh:async()=>{
-      const fresh=await buildRegistry(config,auth);
-      for(const old of registry.list()) if(old.provider==='chatgpt'&&!fresh.entries.has(old.id)) registry.entries.delete(old.id);
-      for(const model of fresh.list()) {const old=registry.entries.get(model.id);registry.entries.set(model.id,{...model,verifiedAt:old?.verifiedAt,availability:old?.availability,unavailableUntil:old?.unavailableUntil,
-        ...(old?.availability==='auth_failed'?{auth:old.auth}:{}),...(model.auth!=='authenticated'&&model.provider==='chatgpt'?{availability:'auth_failed',verifiedAt:undefined}:{})});}
-    }});
+    refresh:async()=>{mergeRegistryRefresh(registry,await buildRegistry(config,auth,send));}});
   try {
     await mkdir(dirname(runtimeFile),{recursive:true,mode:0o700});
     await writeFile(runtimeFile,JSON.stringify({id:runtimeId,pid:process.pid,baseUrl:gateway.baseUrl,token:gateway.token}),{mode:0o600});
@@ -144,6 +141,7 @@ export async function launch(args: string[], config: Config, dependencies: Sessi
   const session=await prepareSession(args,config,dependencies);
   try {
     if(!dependencies.quiet)process.stderr.write('Claudapter session '+session.runtimeId+(process.env.CLAUDAPTER_PROFILE?' · profile '+process.env.CLAUDAPTER_PROFILE:'')+'. /model: press s to switch without saving your default.\n');
+    if(!dependencies.quiet)for(const notice of session.registry.notices)process.stderr.write('[Claudapter] '+notice+'\n');
     const child=spawn('claude',[...session.args,'--settings',session.settings,'--plugin-dir',session.plugin],{stdio:'inherit',shell:false,windowsHide:true,env:session.env});
     const stop=()=>{child.kill('SIGTERM');};
     process.on('SIGTERM',stop);
