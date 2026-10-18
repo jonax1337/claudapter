@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toResponsesRequest, TurnTranslator } from '../dist/translate.js';
+import { toResponsesRequest, TurnTranslator, withoutBridgeReasoning } from '../dist/translate.js';
 
 /**
  * The bridge's translation layer. Everything here is a shape the ChatGPT
@@ -176,15 +176,56 @@ test('a function call becomes a complete tool_use block and forces stop_reason t
   assert.equal(delta.data.delta.stop_reason, 'tool_use');
 });
 
-test('foreign reasoning summaries remain text without forged Anthropic signatures', () => {
-  const events = translate([
-    { type: 'response.reasoning_summary_text.delta', delta: 'weighing options' },
-    { type: 'response.output_text.delta', delta: 'done' },
-    { type: 'response.completed', response: { usage: {input_tokens:0,output_tokens:0} } },
-  ]);
-  assert.ok(events.every(event=>event.data?.delta?.type!=='thinking_delta'));
-  const text=events.filter(event=>event.data?.delta?.type==='text_delta');
-  assert.deepEqual(text.map(e=>e.data.delta.text),['[Reasoning summary]\nweighing options','\n[/Reasoning summary]\n\ndone']);
+const reasoningTurn = [
+  { type: 'response.reasoning_summary_part.added', summary_index: 0 },
+  { type: 'response.reasoning_summary_text.delta', delta: '**Planning**' },
+  { type: 'response.reasoning_summary_part.added', summary_index: 1 },
+  { type: 'response.reasoning_summary_text.delta', delta: '**Checking**' },
+  { type: 'response.output_item.done', item: { type: 'reasoning', encrypted_content: 'enc-1', summary: [] } },
+  { type: 'response.output_text.delta', delta: 'done' },
+  { type: 'response.completed', response: { usage: {input_tokens:0,output_tokens:0} } },
+];
+
+test('GPT reasoning becomes a native thinking block, kept apart from the answer text', () => {
+  const events = translate(reasoningTurn);
+  const thinking = events.filter(event => event.data?.delta?.type === 'thinking_delta').map(event => event.data.delta.thinking);
+  assert.equal(thinking.join(''), '**Planning**\n\n**Checking**');
+  const text = events.filter(event => event.data?.delta?.type === 'text_delta').map(event => event.data.delta.text);
+  assert.deepEqual(text, ['done']);
+  const starts = events.filter(event => event.event === 'content_block_start').map(event => event.data.content_block.type);
+  assert.deepEqual(starts, ['thinking', 'text']);
+});
+
+test('the thinking signature returns GPT its own encrypted reasoning on the next request', () => {
+  const translator = new TurnTranslator('gpt-5.6-sol');
+  for (const event of reasoningTurn) translator.handle(event);
+  const assistant = translator.toMessage();
+  const next = (model) => toResponsesRequest(
+    { messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: assistant.content }, { role: 'user', content: 'more' }] },
+    { ...options, model },
+  ).input[1];
+  assert.deepEqual(next('gpt-5.6-sol'), { type: 'reasoning', summary: [{ type: 'summary_text', text: '**Planning**\n\n**Checking**' }], encrypted_content: 'enc-1' });
+  // Another model cannot decrypt it, so only the readable summary travels.
+  assert.equal(next('gpt-6-sol').type, 'message');
+  assert.match(next('gpt-6-sol').content[0].text, /Prior reasoning summary/);
+});
+
+test('bridge thinking never reaches another provider as forged Claude thinking', () => {
+  const translator = new TurnTranslator('gpt-5.6-sol');
+  for (const event of reasoningTurn) translator.handle(event);
+  const genuine = { type: 'thinking', thinking: 'claude', signature: 'anthropic-signature' };
+  const body = withoutBridgeReasoning({ messages: [
+    { role: 'assistant', content: [...translator.toMessage().content] },
+    { role: 'assistant', content: [genuine] },
+  ] });
+  assert.deepEqual(body.messages, [{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }, { role: 'assistant', content: [genuine] }]);
+});
+
+test('parallel tool calls follow Claude Code unless it disables them', () => {
+  const tools = [{ name: 'Read', input_schema: { type: 'object' } }];
+  const messages = [{ role: 'user', content: 'x' }];
+  assert.equal(toResponsesRequest({ messages, tools }, options).parallel_tool_calls, true);
+  assert.equal(toResponsesRequest({ messages, tools, tool_choice: { type: 'auto', disable_parallel_tool_use: true } }, options).parallel_tool_calls, false);
 });
 
 test('a failed turn is reported as an error rather than a silent stop', () => {
@@ -201,8 +242,9 @@ test('the non-streaming shape carries the same text and tool calls', () => {
     type: 'response.output_item.done',
     item: { type: 'function_call', name: 'Read', arguments: '{"path":"a.txt"}', call_id: 'call_3' },
   });
+  translator.handle({ type: 'response.output_text.delta', delta: 'some text' });
   translator.handle({ type: 'response.completed', response: { usage: { input_tokens: 4,output_tokens:0 } } });
-  const message = translator.toMessage('some text');
+  const message = translator.toMessage();
 
   assert.equal(message.role, 'assistant');
   assert.equal(message.stop_reason, 'tool_use');

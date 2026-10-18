@@ -316,8 +316,11 @@ still apply. See [context evidence](internal/context-evidence.md).
   settings now use catalog maxima; user/managed overrides and native reserves
   can still change the effective window shown by `/context`.
 - Native tools, text, supported image blocks, tool results and tool choices have
-  translation coverage. Foreign reasoning summaries become text; Claude thinking
-  is carried as prior reasoning text for GPT. Redacted thinking, hosted tools,
+  translation coverage. GPT reasoning appears as native Claude Code thinking; its
+  signature carries the encrypted reasoning back to the same GPT model on the next
+  request, and these blocks are removed before a conversation reaches any other
+  provider. Claude thinking is carried as prior reasoning text for GPT. GPT may make
+  parallel tool calls unless Claude Code disables them. Redacted thinking, hosted tools,
   documents, structured output formats and unknown semantic blocks fail explicitly.
   GPT output limits follow the Codex backend; Anthropic's output-token budget is
   not an exact cross-provider control.

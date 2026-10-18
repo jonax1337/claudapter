@@ -17,6 +17,11 @@ export const TOKEN_HEADER = 'x-claudapter-token';
 export const QUOTA_PREEMPT_PERCENT = 95;
 /** How often expired cooldowns are announced as recovered without waiting for the next request. */
 const COOLDOWN_SWEEP_MS = 1000;
+/**
+ * A request is stopped only after the upstream stays silent this long. Every received chunk restarts the wait,
+ * so long reasoning turns survive; the value matches Claude Code's own default API timeout.
+ */
+export const UPSTREAM_IDLE_TIMEOUT_MS = 600_000;
 export interface RouteEvent {
   time: string; event: string; session?: string; agent?: string; requestClass?: string;
   requested: string; actual: string; provider: string; status?: number;
@@ -27,7 +32,7 @@ export interface GatewayOptions {
   registry: Registry; auth?: CodexAuth;
   onEvent?: (event: RouteEvent) => void;
   // Dependency injection for isolated transport tests; never populated from project files.
-  fetch?: typeof fetch; timeoutMs?: number;
+  fetch?: typeof fetch; idleTimeoutMs?: number;
   config?: Config;
   refresh?: () => Promise<void>;
 }
@@ -56,8 +61,8 @@ export async function startGateway(options: GatewayOptions) {
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const controller = new AbortController();
     controllers.add(controller);
-    res.once('close', () => { if (!res.writableFinished) controller.abort(); });
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000);
+    res.once('close', () => { if (!res.writableFinished) controller.abort(new Error('Client disconnected.')); });
+    const watchdog = idleWatchdog(controller, options.idleTimeoutMs ?? UPSTREAM_IDLE_TIMEOUT_MS);
     let fingerprint = '';
     let event: RouteEvent | undefined;
     let identity: Identity = {};
@@ -141,6 +146,7 @@ export async function startGateway(options: GatewayOptions) {
           usageAttempt = path==='/v1/messages' ? usage.begin({provider:model.provider,requestedModel:body.model,actualModel:model.id,
             upstreamModel:model.upstream,session,agent,requestClass}) : undefined;
           event={...event,attemptId:usageAttempt?.id};
+          watchdog.restart();
           upstream=await providers.request({model,body,request:req,path:path+new URL(req.url!,'http://localhost').search,session:session??fingerprint,
             signal: policy ? AbortSignal.any([controller.signal,AbortSignal.timeout(policy.timeoutMs)]) : controller.signal});
           if (usageAttempt) usageAttempt.status=upstream.status;
@@ -175,6 +181,7 @@ export async function startGateway(options: GatewayOptions) {
         }
       }
       if (!upstream.body) throw new Error('Missing upstream stream.');
+      const stream = observed(upstream.body, watchdog.restart);
       if (model.provider !== 'chatgpt') {
         const headers: Record<string,string> = {};
         upstream.headers.forEach((v,k) => { if (k === 'content-type' || k === 'retry-after' || k.startsWith('anthropic-')) headers[k] = v; });
@@ -182,7 +189,7 @@ export async function startGateway(options: GatewayOptions) {
         if (body.stream===true) {
           let complete=false;
           let reportedUsage: Record<string,unknown> = {}; let reportedModel: unknown; let finalUsage=false;
-          for await (const item of readServerSentEvents(upstream.body)) {
+          for await (const item of readServerSentEvents(stream)) {
             if (item.type==='error') throw new Error('Upstream stream failed.');
             if (item.type==='message_start') { reportedUsage={...((item.message as any)?.usage??{})}; reportedModel=(item.message as any)?.model; }
             if (item.type==='message_delta') { reportedUsage={...reportedUsage,...(item.usage as any??{})}; finalUsage ||= Object.hasOwn(item.usage as object??{},'output_tokens'); }
@@ -194,7 +201,7 @@ export async function startGateway(options: GatewayOptions) {
         } else {
           // Bound inspection while preserving every passthrough byte, including unknown provider fields.
           const chunks: Uint8Array[]=[]; let size=0;
-          for await (const chunk of upstream.body) { size+=chunk.length; if(size<=16*1024*1024) chunks.push(chunk); await write(res,chunk); }
+          for await (const chunk of stream) { size+=chunk.length; if(size<=16*1024*1024) chunks.push(chunk); await write(res,chunk); }
           let message: any;
           if(size<=16*1024*1024) try { message=JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* Missing usage stays unknown. */ }
           if (usageAttempt) usage.finish(usageAttempt,'completed',message?.usage,message?.model);
@@ -202,11 +209,10 @@ export async function startGateway(options: GatewayOptions) {
         model.verifiedAt=new Date().toISOString();model.availability='verified';model.auth='authenticated';delete model.unavailableUntil;
         res.end(); return;
       }
-      const translator = new TurnTranslator(model.id);
-      let text = '', complete = false;
-      for await (const incoming of readServerSentEvents(upstream.body)) {
+      const translator = new TurnTranslator(model.id, model.upstream);
+      let complete = false;
+      for await (const incoming of readServerSentEvents(stream)) {
         if (incoming.type === 'response.failed' || incoming.type === 'response.incomplete' || incoming.type === 'error') throw new Error('Upstream did not complete the turn.');
-        if (['response.output_text.delta','response.reasoning_summary_text.delta','response.reasoning_text.delta'].includes(String(incoming.type))) text += incoming.delta;
         if (incoming.type === 'response.output_item.done' && (incoming.item as any)?.type === 'function_call')
           emit({...event, event: 'tool', tools: [(incoming.item as any).name]});
         if (incoming.type==='response.completed' && (incoming.response as any)?.model && (incoming.response as any).model!==model.upstream)
@@ -227,19 +233,19 @@ export async function startGateway(options: GatewayOptions) {
       if (!complete) throw new Error('Truncated upstream stream.');
       model.verifiedAt=new Date().toISOString();model.availability='verified';model.auth='authenticated';delete model.unavailableUntil;
       if (body.stream === true) res.end();
-      else json(res, 200, translator.toMessage(text));
+      else json(res, 200, translator.toMessage());
     } catch (e) {
       if (usageAttempt) usage.finish(usageAttempt,'interrupted');
       if (res.headersSent) {
         state.block(identity);
         if (fingerprint) { if (interrupted.size >= INTERRUPTED_MAX) interrupted.delete(interrupted.values().next().value!); interrupted.add(fingerprint); }
-        if (event) emit({...event, event:'interrupted',reason:'No replay after output started'});
+        if (event) emit({...event, event:'interrupted',reason:'No replay after output started: '+safeMessage((e as Error).message)});
         const scope=noticeScope(identity);
         if (event && scope) state.notices.publish({kind:'interrupted',scope,requested:event.requested,actual:event.actual,provider:event.provider,at:Date.now()});
         // A protocol error ends the turn; the replay guard also catches native retries.
         res.end('event: error\ndata: '+JSON.stringify({type:'error',error:{type:'invalid_request_error',message:'Interrupted upstream stream. Automatic replay is blocked.'}})+'\n\n');
       } else error(res, e instanceof BodyLimitError ? 413 : 400, 'Gateway request stopped; no replay. ' + safeMessage((e as Error).message));
-    } finally { clearTimeout(timer); controllers.delete(controller); }
+    } finally { watchdog.stop(); controllers.delete(controller); }
   }
   /** Main and sub-agent requests only: auxiliary traffic cannot be protected by a fallback rule. */
   function noticeScope(identity: Identity): RouteScope | undefined {
@@ -268,11 +274,26 @@ export async function startGateway(options: GatewayOptions) {
   if (!address || typeof address === 'string') throw new Error('Cannot bind loopback gateway.');
   return { baseUrl:'http://127.0.0.1:' + address.port, token, events, registry: options.registry,state,manifest,usage,quotas,
     subscribeRoutes: state.notices.subscribe,
-    async close() { clearInterval(sweep); for (const c of controllers) c.abort(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+    async close() { clearInterval(sweep); for (const c of controllers) c.abort(new Error('Gateway shut down.')); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 
 function header(req: IncomingMessage, key: string): string | undefined {
   const v = req.headers[key]; return typeof v === 'string' && /^[\w.:-]{1,128}$/.test(v) ? v : undefined;
+}
+/** Aborts the request once `idleMs` pass without a `restart()`. */
+function idleWatchdog(controller: AbortController, idleMs: number) {
+  let timer: NodeJS.Timeout | undefined;
+  const stop = () => clearTimeout(timer);
+  const restart = () => {
+    stop();
+    timer = setTimeout(() => controller.abort(new Error('Upstream sent nothing for '+idleMs/1000+' s.')), idleMs);
+  };
+  restart();
+  return {restart, stop};
+}
+/** Passes the upstream body through unchanged and reports every chunk as a sign of life. */
+function observed(body: ReadableStream<Uint8Array>, onChunk: () => void): ReadableStream<Uint8Array> {
+  return body.pipeThrough(new TransformStream<Uint8Array,Uint8Array>({transform(chunk, out) { onChunk(); out.enqueue(chunk); }}));
 }
 class BodyLimitError extends Error {}
 async function readBody(req: IncomingMessage): Promise<string> {

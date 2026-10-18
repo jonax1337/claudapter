@@ -23,6 +23,7 @@ export interface AnthropicBlock {
   is_error?: boolean;
   source?: { type?: string; media_type?: string; data?: string; url?: string };
   thinking?: string;
+  signature?: string;
   tool_name?: string;
 }
 
@@ -43,6 +44,24 @@ export interface AnthropicRequest {
 }
 
 type ResponsesItem = Record<string, unknown>;
+
+/**
+ * GPT reasoning travels through Claude Code as a thinking block whose signature carries the encrypted reasoning,
+ * so the next request can hand GPT its own chain of thought back. Only the model that wrote it can decrypt it.
+ */
+const REASONING_SIGNATURE_PREFIX = 'claudapter-reasoning:v1:';
+
+export function isBridgeReasoningSignature(signature: unknown): boolean {
+  return typeof signature === 'string' && signature.startsWith(REASONING_SIGNATURE_PREFIX);
+}
+function reasoningSignature(model: string, encrypted: string): string {
+  return REASONING_SIGNATURE_PREFIX + model + ':' + encrypted;
+}
+/** The encrypted reasoning if this signature was issued for `model`; reasoning from another model is unreadable. */
+function encryptedReasoningFor(model: string, signature: unknown): string | undefined {
+  const own = REASONING_SIGNATURE_PREFIX + model + ':';
+  return typeof signature === 'string' && signature.startsWith(own) ? signature.slice(own.length) : undefined;
+}
 
 function blocksOf(content: string | AnthropicBlock[]): AnthropicBlock[] {
   return typeof content === 'string' ? [{ type: 'text', text: content }] : content;
@@ -128,7 +147,7 @@ export function toResponsesRequest(
       const text = blocksOf(message.content).map((block) => block.text ?? '').filter(Boolean).join('\n');
       if (text) instructions.push(text);
     } else {
-      input.push(...messageItems(message));
+      input.push(...messageItems(message, options.model));
     }
   }
 
@@ -150,7 +169,9 @@ export function toResponsesRequest(
     model: options.model,
     ...(instructions.length ? { instructions: instructions.join('\n\n') } : {}),
     input,
-    ...(tools.length ? { tools, tool_choice: choice?.type==='tool' ? {type:'function',name:choice.name} : choice?.type==='any' ? 'required' : choice?.type ?? 'auto', parallel_tool_calls: false } : {}),
+    ...(tools.length ? { tools, tool_choice: choice?.type==='tool' ? {type:'function',name:choice.name} : choice?.type==='any' ? 'required' : choice?.type ?? 'auto',
+      // Claude Code asks for independent calls in one turn; refusing them would contradict its own instructions.
+      parallel_tool_calls: choice?.disable_parallel_tool_use !== true } : {}),
     reasoning: { effort: effortFor(request), summary: 'auto' },
     store: false,
     stream: true,
@@ -164,7 +185,7 @@ export function toResponsesRequest(
  * one Anthropic message can become several items - and their order has to
  * survive, or a tool result arrives before the call it answers.
  */
-function messageItems(message: AnthropicMessage): ResponsesItem[] {
+function messageItems(message: AnthropicMessage, model: string): ResponsesItem[] {
   const role = message.role === 'assistant' ? 'assistant' : 'user';
   const items: ResponsesItem[] = [];
   let pendingText: string[] = [];
@@ -182,7 +203,9 @@ function messageItems(message: AnthropicMessage): ResponsesItem[] {
     if (block.type === 'text') {
       pendingText.push(block.text ?? '');
     } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
-      pendingText.push('[Prior reasoning summary]\n' + block.thinking + '\n[/Prior reasoning summary]');
+      const encrypted = encryptedReasoningFor(model, block.signature);
+      if (encrypted) { flush(); items.push(reasoningItem(block.thinking, encrypted)); }
+      else pendingText.push('[Prior reasoning summary]\n' + block.thinking + '\n[/Prior reasoning summary]');
     } else if (block.type === 'image') {
       flush();
       if (role !== 'user') throw new Error('Images in assistant messages are not supported by the ChatGPT bridge.');
@@ -212,6 +235,23 @@ function messageItems(message: AnthropicMessage): ResponsesItem[] {
   return items;
 }
 
+/**
+ * Bridge thinking blocks carry GPT reasoning that Claude, GLM or Ollama would reject as forged; they are removed
+ * before a conversation that switched away from GPT reaches another provider.
+ */
+export function withoutBridgeReasoning<T extends { messages?: unknown }>(body: T): T {
+  if (!Array.isArray(body.messages)) return body;
+  const messages = (body.messages as AnthropicMessage[])
+    .map(message => typeof message.content === 'string' ? message
+      : { ...message, content: message.content.filter(block => !(block.type === 'thinking' && isBridgeReasoningSignature(block.signature))) })
+    .filter(message => typeof message.content === 'string' || message.content.length);
+  return { ...body, messages };
+}
+
+function reasoningItem(summary: string, encrypted: string): ResponsesItem {
+  return { type: 'reasoning', summary: summary ? [{ type: 'summary_text', text: summary }] : [], encrypted_content: encrypted };
+}
+
 /* ------------------------------ response side ----------------------------- */
 
 export interface AnthropicEvent {
@@ -238,12 +278,15 @@ export class TurnTranslator {
   #started = false;
   #toolCalls: ToolCall[] = [];
   #usage: Record<string, number> = {};
-  #reasoningText = false;
+  #reasoning: { thinking: string; signature: string }[] = [];
   #text = '';
   readonly model: string;
+  /** The backend model name that encrypted the reasoning; the request side matches signatures against it. */
+  readonly reasoningModel: string;
 
-  constructor(model: string) {
+  constructor(model: string, reasoningModel = model) {
     this.model = model;
+    this.reasoningModel = reasoningModel;
   }
 
   /** Translate one backend SSE event. Returns the Anthropic events it produces. */
@@ -252,16 +295,14 @@ export class TurnTranslator {
     const delta = typeof event.delta === 'string' ? event.delta : undefined;
     if (type === 'response.refusal.delta' && delta !== undefined) return this.#textDelta(delta);
 
-    if (type === 'response.output_text.delta' && delta !== undefined) {
-      const prefix=this.#reasoningText?'\n[/Reasoning summary]\n\n':'';this.#reasoningText=false;
-      return this.#textDelta(prefix+delta);
-    }
+    if (type === 'response.output_text.delta' && delta !== undefined) return this.#textDelta(delta);
     if (
       (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') &&
       delta !== undefined
     ) {
       return this.#thinkingDelta(delta);
     }
+    if (type === 'response.reasoning_summary_part.added') return this.#summaryPartAdded();
     if (type === 'response.output_item.done') return this.#itemDone(event.item as Record<string, unknown> | undefined);
     if (type === 'response.completed') return this.#completed(event.response as Record<string, unknown> | undefined);
     if (type === 'response.failed' || type === 'response.incomplete') {
@@ -290,10 +331,9 @@ export class TurnTranslator {
   }
 
   /** The same turn as one non-streaming Messages response. */
-  toMessage(text: string): Record<string, unknown> {
-    const content: Record<string, unknown>[] = [];
-    text=this.#text || text;
-    if (text) content.push({ type: 'text', text });
+  toMessage(): Record<string, unknown> {
+    const content: Record<string, unknown>[] = this.#reasoning.map(({ thinking, signature }) => ({ type: 'thinking', thinking, signature }));
+    if (this.#text) content.push({ type: 'text', text: this.#text });
     for (const call of this.#toolCalls) {
       content.push({ type: 'tool_use', id: call.id, name: call.name, input: parseToolInput(call.argumentsJson) });
     }
@@ -322,17 +362,36 @@ export class TurnTranslator {
     ];
   }
 
+  /** GPT reasoning is shown as native Claude Code thinking, not mixed into the answer text. */
   #thinkingDelta(thinking: string): AnthropicEvent[] {
-    // Foreign reasoning has no Anthropic signature; preserve the summary as text.
-    const prefix=this.#reasoningText?'':'[Reasoning summary]\n';this.#reasoningText=true;
-    return this.#textDelta(prefix+thinking);
+    const events = [...this.#start(), ...this.#openBlock('thinking')];
+    this.#reasoning.at(-1)!.thinking += thinking;
+    events.push(blockDelta(this.#index, { type: 'thinking_delta', thinking }));
+    return events;
+  }
+
+  /** Summary parts are separate paragraphs; joined directly their bold headings run together. */
+  #summaryPartAdded(): AnthropicEvent[] {
+    return this.#open === 'thinking' && this.#reasoning.at(-1)!.thinking ? this.#thinkingDelta('\n\n') : [];
+  }
+
+  #itemDone(item: Record<string, unknown> | undefined): AnthropicEvent[] {
+    if (item?.type === 'reasoning') return this.#reasoningDone(item);
+    if (item?.type === 'function_call') return this.#functionCallDone(item);
+    return [];
+  }
+
+  /** Seals the thinking block with the encrypted reasoning so the next request can return it to GPT. */
+  #reasoningDone(item: Record<string, unknown>): AnthropicEvent[] {
+    if (typeof item.encrypted_content !== 'string') return this.#open === 'thinking' ? this.#closeOpen() : [];
+    const events = [...this.#start(), ...this.#openBlock('thinking')];
+    return [...events, ...this.#sealThinking(item.encrypted_content), ...this.#closeOpen()];
   }
 
   // Function calls arrive whole rather than as argument deltas: the CLI
   // ignores `response.function_call_arguments.delta` and reads the finished
   // item, so we do the same and emit one complete tool_use block.
-  #itemDone(item: Record<string, unknown> | undefined): AnthropicEvent[] {
-    if (item?.type !== 'function_call') return [];
+  #functionCallDone(item: Record<string, unknown>): AnthropicEvent[] {
     const call: ToolCall = {
       id: String(item.call_id ?? item.id ?? ''),
       name: String(item.name ?? ''),
@@ -408,8 +467,16 @@ export class TurnTranslator {
 
   #closeOpen(): AnthropicEvent[] {
     if (!this.#open) return [];
+    // A thinking block always carries a bridge signature, so it can never pass as genuine Claude thinking.
+    const events = this.#open === 'thinking' && !this.#reasoning.at(-1)!.signature ? this.#sealThinking('') : [];
     this.#open = null;
-    return [blockStop(this.#index)];
+    return [...events, blockStop(this.#index)];
+  }
+
+  #sealThinking(encrypted: string): AnthropicEvent[] {
+    const signature = reasoningSignature(this.reasoningModel, encrypted);
+    this.#reasoning.at(-1)!.signature = signature;
+    return [blockDelta(this.#index, { type: 'signature_delta', signature })];
   }
 
   #openBlock(kind: 'text' | 'thinking'): AnthropicEvent[] {
@@ -417,6 +484,7 @@ export class TurnTranslator {
     const events = this.#closeOpen();
     this.#index += 1;
     this.#open = kind;
+    if (kind === 'thinking') this.#reasoning.push({ thinking: '', signature: '' });
     events.push(
       blockStart(
         this.#index,

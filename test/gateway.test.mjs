@@ -105,8 +105,17 @@ test('two simultaneous gateways cannot cross route state or local authorization'
 test('oversized input is rejected before an upstream request',async t=>{
   const f=await fixture(t);const r=await f.send({messages:[{role:'user',content:'x'.repeat(17*1024*1024)}]});assert.equal(r.status,413);assert.equal(f.requests.length,0);
 });
-test('upstream timeout stops the request without fallback',async t=>{
-  const f=await fixture(t,{options:{timeoutMs:50},handler:()=>{}});const r=await f.send();assert.equal(r.status,400);assert.equal(f.requests.length,1);
+test('a silent upstream is stopped after the idle timeout without fallback',async t=>{
+  const f=await fixture(t,{options:{idleTimeoutMs:50},handler:()=>{}});const r=await f.send();assert.equal(r.status,400);assert.equal(f.requests.length,1);
+  assert.match((await r.json()).error.message,/Upstream sent nothing/);
+});
+test('a stream that keeps sending outlives the idle timeout',async t=>{
+  const pause=()=>new Promise(r=>setTimeout(r,40));
+  const f=await fixture(t,{options:{idleTimeoutMs:100},handler:async(_,res)=>{
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    for(let i=0;i<8;i++){res.write(frame({type:'response.output_text.delta',delta:'.'}));await pause();}
+    res.end(completion());}});
+  const r=await f.send();assert.equal(r.status,200);assert.equal((await r.json()).content[0].text,'........OK');
 });
 test('client cancellation aborts upstream work and gateway shutdown releases its port',async t=>{
   let aborted=false;

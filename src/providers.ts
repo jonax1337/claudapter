@@ -4,7 +4,7 @@ import { CodexAuth } from './auth.js';
 import type { Model } from './models.js';
 import { ollamaEndpoint } from './ollama.js';
 import { ClaudeAccountAuth, profileClaudeHome } from './profiles.js';
-import { toResponsesRequest } from './translate.js';
+import { toResponsesRequest, withoutBridgeReasoning } from './translate.js';
 
 export interface ProviderRequest {
   model: Model; body: any; request: IncomingMessage; path: string; session: string; signal: AbortSignal;
@@ -57,6 +57,6 @@ export class Providers {
       const beta=String(request.headers['anthropic-beta'] ?? '').split(',').filter(b=>!b.trim().startsWith('oauth')).join(',');
       if (beta) headers.set('anthropic-beta',beta);
     }
-    return this.send(url.replace(/\/$/,'')+path,{method:'POST',headers,body:JSON.stringify({...body,model:model.upstream}),redirect:'error',signal});
+    return this.send(url.replace(/\/$/,'')+path,{method:'POST',headers,body:JSON.stringify({...withoutBridgeReasoning(body),model:model.upstream}),redirect:'error',signal});
   }
 }

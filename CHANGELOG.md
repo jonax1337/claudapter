@@ -4,6 +4,20 @@ All notable changes to Claudapter. Versions before 1.0 are release candidates;
 see [docs/internal/verification.md](docs/internal/verification.md) for what each one
 was verified against.
 
+## 0.2.0-rc.8 — 2026-10-18
+
+- **Gateway:** the fixed 120-second limit per request is now an idle timeout. A request
+  stops only after the upstream sends nothing for 10 minutes, so long GPT reasoning turns
+  no longer end in "Gateway request stopped" or a blocked turn. Interrupted-turn events
+  name the cause.
+- **GPT reasoning:** shown as native Claude Code thinking instead of
+  `[Reasoning summary]` text in the answer. Summary paragraphs stay separated. The
+  encrypted reasoning is returned to the same GPT model on the next request, so it
+  keeps its chain of thought across tool calls. These blocks never reach Claude, Z.ai
+  or Ollama.
+- **GPT tool use:** parallel tool calls are allowed, as Claude Code's own instructions
+  expect, unless Claude Code disables them.
+
 ## 0.2.0-rc.7 — 2026-10-17
 
 First public release candidate.

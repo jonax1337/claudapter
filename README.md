@@ -6,7 +6,7 @@
   <img src="docs/assets/logo-dark.svg" alt="claudapter — Your Claude Code. Your choice of models." width="560">
 </picture>
 
-[![Release](https://img.shields.io/badge/release-0.2.0--rc.7-d97757?style=flat-square)](https://github.com/jonax1337/claudapter/releases)
+[![Release](https://img.shields.io/badge/release-0.2.0--rc.8-d97757?style=flat-square)](https://github.com/jonax1337/claudapter/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A524-5fa04e?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-%E2%89%A52.1.301-d97757?style=flat-square)](https://code.claude.com)
@@ -73,7 +73,7 @@ Claudapter is not published to npm. Install a release tarball from
 [GitHub Releases](https://github.com/jonax1337/claudapter/releases):
 
 ```sh
-npm install --global https://github.com/jonax1337/claudapter/releases/download/v0.2.0-rc.7/claudapter-0.2.0-rc.7.tgz
+npm install --global https://github.com/jonax1337/claudapter/releases/download/v0.2.0-rc.8/claudapter-0.2.0-rc.8.tgz
 claudapter setup
 claudapter doctor
 ```
@@ -85,7 +85,7 @@ git clone https://github.com/jonax1337/claudapter.git
 cd claudapter
 npm ci
 npm pack
-npm install --global ./claudapter-0.2.0-rc.7.tgz
+npm install --global ./claudapter-0.2.0-rc.8.tgz
 ```
 
 Installing adds a `claudapter` command. It does **not** replace `claude`, edit your
@@ -224,7 +224,7 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## Status and limitations
 
-Version **0.2.0-rc.7** is a release candidate. The automated suites (Node and Bun)
+Version **0.2.0-rc.8** is a release candidate. The automated suites (Node and Bun)
 run against fixture accounts in isolated homes; several flows have additionally
 been accepted live on Windows. Not yet accepted live, and therefore not claimed:
 
